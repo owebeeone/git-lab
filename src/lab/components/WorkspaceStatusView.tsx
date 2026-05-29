@@ -12,7 +12,7 @@ import { REPO_STATUS_BY_PEER } from '../fakeData';
 import type { Peer, RepoStatus } from '../types';
 import { dragProps, fileLink } from '../dnd';
 import { useEditor } from '../useEditor';
-import PeerTabs from './PeerTabs';
+import PeerSelect from './PeerSelect';
 import WorkspaceGraphView from './WorkspaceGraphView';
 
 const CHANGE_BADGE: Record<string, string> = {
@@ -87,7 +87,7 @@ export default function WorkspaceStatusView() {
   return (
     <section className="view">
       <div className="view-head-row">
-        <PeerTabs />
+        {layout === 'tiles' ? <PeerSelect /> : <span />}
         <div className="segmented">
           <button className={layout === 'tiles' ? 'active' : ''} onClick={() => layoutTap?.set('tiles')}>Tiles</button>
           <button className={layout === 'graph' ? 'active' : ''} onClick={() => layoutTap?.set('graph')}>Graph</button>

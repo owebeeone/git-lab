@@ -6,7 +6,7 @@ import { Highlighted } from '../highlight';
 import { resolveContent } from '../content';
 import { dragProps, fileLink, fileLineLink } from '../dnd';
 import { useEditor } from '../useEditor';
-import PeerTabs from './PeerTabs';
+import PeerSelect from './PeerSelect';
 import FileExplorer from './FileExplorer';
 
 function splitKey(key: string): { repoPath: string; path: string } {
@@ -69,10 +69,11 @@ export default function FileViewerView() {
 
   return (
     <section className="view files-ide">
-      <PeerTabs />
       <div className="ide-body">
         <FileExplorer activeKey={focusedActive} onOpen={openInFiles} peer={peer} />
-        <div className="editor-groups">
+        <div className="editor-stack">
+          <div className="files-toolbar"><PeerSelect /></div>
+          <div className="editor-groups">
           {groups.map((g) => {
             const active = g.active;
             const info = active ? splitKey(active) : null;
@@ -138,6 +139,7 @@ export default function FileViewerView() {
               </div>
             );
           })}
+          </div>
         </div>
       </div>
     </section>

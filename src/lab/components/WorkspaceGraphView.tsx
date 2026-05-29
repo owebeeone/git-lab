@@ -4,6 +4,7 @@ import { dragProps, fileLink } from '../dnd';
 import { dependencyEdges } from '../fakeData';
 import { graphEngine, VBW, VBH } from '../graphEngine';
 import { useEditor } from '../useEditor';
+import PeerSelect from './PeerSelect';
 import type { GraphRenderNode, Peer, RepoStatus } from '../types';
 
 function toCanvas(svg: SVGSVGElement, clientX: number, clientY: number) {
@@ -50,7 +51,10 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
   return (
     <div className="graph-wrap">
       <div className="graph-toolbar">
-        <span className="muted">Drag nodes to anchor · click to pin · hover to expand</span>
+        <div className="graph-toolbar-left">
+          <PeerSelect />
+          <span className="muted">Drag nodes to anchor · click to pin · hover to expand</span>
+        </div>
         <button className="ghost" onClick={() => graphEngine.scatter()}>↻ Re-layout</button>
       </div>
       <svg
