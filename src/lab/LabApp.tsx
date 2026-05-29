@@ -5,6 +5,7 @@ import OnboardingView from './components/OnboardingView';
 import WorkspaceStatusView from './components/WorkspaceStatusView';
 import FileViewerView from './components/FileViewerView';
 import DiffViewerView from './components/DiffViewerView';
+import SessionsView from './components/SessionsView';
 import SettingsView from './components/SettingsView';
 import ChatPanel from './components/ChatPanel';
 import { Icon } from './components/icons';
@@ -15,6 +16,7 @@ const TABS: { id: ViewId; label: string; icon: string }[] = [
   { id: 'status', label: 'Workspace', icon: 'workspace' },
   { id: 'file', label: 'Files', icon: 'files' },
   { id: 'diff', label: 'Diff', icon: 'diff' },
+  { id: 'sessions', label: 'Sessions', icon: 'terminal' },
   { id: 'onboarding', label: 'Collaborators', icon: 'collaborators' },
   { id: 'settings', label: 'Settings', icon: 'settings' },
 ];
@@ -47,6 +49,7 @@ export default function LabApp() {
           {view === 'status' && <WorkspaceStatusView />}
           {view === 'file' && <FileViewerView />}
           {view === 'diff' && <DiffViewerView />}
+          {view === 'sessions' && <SessionsView />}
           {view === 'onboarding' && <OnboardingView />}
           {view === 'settings' && <SettingsView />}
         </main>

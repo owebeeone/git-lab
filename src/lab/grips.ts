@@ -3,8 +3,9 @@ import { defineGrip } from '../runtime';
 import type {
   ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId,
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
+  CommandSession, SessionStatusFilter, SessionDiagnostics,
 } from './types';
-import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID } from './fakeData';
+import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
 // Navigation
 export const CURRENT_VIEW = defineGrip<ViewId>('Lab.CurrentView', 'status');
@@ -96,3 +97,30 @@ export const ONBOARDING_FORM_TAP = defineGrip<AtomTapHandle<OnboardingForm>>('La
 
 // Workspace graph nodes (published by the GraphSim tap engine)
 export const GRAPH_NODES = defineGrip<GraphRenderNode[]>('Lab.GraphNodes', []);
+
+// Command sessions (project_viewer-style runs)
+export const SESSIONS = defineGrip<CommandSession[]>('Lab.Sessions', COMMAND_SESSIONS);
+export const SESSIONS_TAP = defineGrip<AtomTapHandle<CommandSession[]>>('Lab.Sessions.Tap');
+export const SELECTED_SESSION = defineGrip<string | null>('Lab.SelectedSession', COMMAND_SESSIONS[0]?.id ?? null);
+export const SELECTED_SESSION_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.SelectedSession.Tap');
+export const SESSION_SEARCH = defineGrip<string>('Lab.SessionSearch', '');
+export const SESSION_SEARCH_TAP = defineGrip<AtomTapHandle<string>>('Lab.SessionSearch.Tap');
+export const SESSION_FILTER = defineGrip<SessionStatusFilter>('Lab.SessionFilter', 'all');
+export const SESSION_FILTER_TAP = defineGrip<AtomTapHandle<SessionStatusFilter>>('Lab.SessionFilter.Tap');
+export const SESSION_DRAFT = defineGrip<string>('Lab.SessionDraft', '');
+export const SESSION_DRAFT_TAP = defineGrip<AtomTapHandle<string>>('Lab.SessionDraft.Tap');
+// Active repo (target) within the selected session.
+export const SELECTED_TARGET = defineGrip<string | null>('Lab.SelectedTarget', null);
+export const SELECTED_TARGET_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.SelectedTarget.Tap');
+// Repos checked for the next "Run command" (repo paths), and the dropdown open state.
+export const RUN_REPOS = defineGrip<string[]>('Lab.RunRepos', ['']);
+export const RUN_REPOS_TAP = defineGrip<AtomTapHandle<string[]>>('Lab.RunRepos.Tap');
+export const RUN_REPOS_OPEN = defineGrip<boolean>('Lab.RunReposOpen', false);
+export const RUN_REPOS_OPEN_TAP = defineGrip<AtomTapHandle<boolean>>('Lab.RunReposOpen.Tap');
+// Purge threshold (days) for the "purge sessions older than N days" tool.
+export const PURGE_DAYS = defineGrip<number>('Lab.PurgeDays', 7);
+export const PURGE_DAYS_TAP = defineGrip<AtomTapHandle<number>>('Lab.PurgeDays.Tap');
+
+// Outputs of the SessionOutputTap (home params: SESSIONS + SELECTED_SESSION).
+export const SESSION_OUTPUT = defineGrip<string>('Lab.SessionOutput', '');
+export const SESSION_DIAGNOSTICS = defineGrip<SessionDiagnostics>('Lab.SessionDiagnostics', { kind: 'none', failed: 0, passed: 0, failures: [] });

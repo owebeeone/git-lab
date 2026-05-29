@@ -356,6 +356,52 @@
   resize: none; min-height: 38px; box-sizing: border-box;
 }
 
+/* Command sessions */
+.sessions-view { display: flex; flex-direction: column; height: 100%; }
+.sessions-toolbar { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.session-search { width: 220px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 10px; font-size: 0.85rem; }
+.session-cmd { width: 280px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 6px 10px; font-size: 0.85rem; font-family: ui-monospace, monospace; }
+.sessions-body { flex: 1 1 auto; display: flex; min-height: 0; margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.session-col { flex: 0 0 320px; width: 320px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--panel); }
+.session-list { flex: 1 1 auto; list-style: none; margin: 0; padding: 4px; overflow: auto; }
+.session-footer { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-top: 1px solid var(--border); font-size: 0.72rem; color: var(--muted); }
+.purge-ctl { display: inline-flex; align-items: center; gap: 4px; color: var(--text); }
+.purge-ctl input { width: 46px; background: var(--panel); border: 1px solid var(--border); border-radius: 5px; color: var(--text); padding: 2px 4px; font-size: 0.72rem; }
+.session-empty { padding: 12px; }
+.session-row { display: grid; grid-template-columns: 12px 1fr; column-gap: 8px; width: 100%; text-align: left; background: transparent; border: none; color: var(--text); padding: 8px 10px; border-radius: 6px; cursor: pointer; }
+.session-row:hover { background: var(--card); }
+.session-row.active { background: var(--accent-soft); }
+.session-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; }
+.session-dot.ok { background: var(--ok); }
+.session-dot.error { background: var(--err); }
+.session-dot.running { background: var(--warn); }
+.session-cmdtext { font-family: ui-monospace, monospace; font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-sub { grid-column: 2; color: var(--muted); font-size: 0.72rem; }
+.session-targets { grid-column: 2; display: flex; gap: 3px; margin-top: 3px; }
+.mini-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.mini-dot.ok { background: var(--ok); } .mini-dot.error { background: var(--err); } .mini-dot.running { background: var(--warn); }
+
+/* Repo multi-select dropdown */
+.repo-multi { position: relative; }
+.repo-multi-btn { background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 0.82rem; }
+.repo-multi-backdrop { position: fixed; inset: 0; z-index: 2500; }
+.repo-multi-panel { position: absolute; top: 110%; left: 0; z-index: 2600; background: var(--card-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px; min-width: 200px; display: flex; flex-direction: column; gap: 2px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+.repo-multi-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 0.82rem; }
+.repo-multi-item:hover { background: var(--card); }
+
+.session-detail { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.target-tabs { display: flex; gap: 4px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.target-tab { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 0.8rem; }
+.target-tab.active { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent); }
+.session-substatus { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 0.78rem; }
+.session-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.session-argv { font-family: ui-monospace, monospace; font-size: 0.85rem; }
+.session-meta { color: var(--muted); font-size: 0.75rem; }
+.diag-strip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--diff-del); border-bottom: 1px solid var(--border); font-size: 0.78rem; flex-wrap: wrap; }
+.diag-count { color: var(--err); }
+.diag-failure { font-family: ui-monospace, monospace; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
+.xterm-host { flex: 1 1 auto; min-height: 0; padding: 6px 8px; overflow: hidden; }
+
 /* Onboarding */
 .peer-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.86rem; }
 .peer-table th, .peer-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }

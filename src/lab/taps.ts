@@ -26,9 +26,19 @@ import {
   EXPLORER_WIDTH, EXPLORER_WIDTH_TAP,
   EXPLORER_DRAG, EXPLORER_DRAG_TAP,
   ONBOARDING_FORM, ONBOARDING_FORM_TAP,
+  SESSIONS, SESSIONS_TAP,
+  SELECTED_SESSION, SELECTED_SESSION_TAP,
+  SESSION_SEARCH, SESSION_SEARCH_TAP,
+  SESSION_FILTER, SESSION_FILTER_TAP,
+  SESSION_DRAFT, SESSION_DRAFT_TAP,
+  SELECTED_TARGET, SELECTED_TARGET_TAP,
+  RUN_REPOS, RUN_REPOS_TAP,
+  RUN_REPOS_OPEN, RUN_REPOS_OPEN_TAP,
+  PURGE_DAYS, PURGE_DAYS_TAP,
 } from './grips';
 import { registerGraphSimTap } from './graphEngine';
 import { registerFileContentTap } from './fileContentTap';
+import { registerSessionOutputTap } from './sessionOutputTap';
 
 // All mock state is held in simple settable atom taps. When the backend lands,
 // these get replaced by taps that subscribe to the delta protocol; the
@@ -59,6 +69,16 @@ export function registerLabTaps() {
   grok.registerTap(createAtomValueTap(EXPLORER_WIDTH, { initial: EXPLORER_WIDTH.defaultValue!, handleGrip: EXPLORER_WIDTH_TAP }));
   grok.registerTap(createAtomValueTap(EXPLORER_DRAG, { initial: EXPLORER_DRAG.defaultValue ?? null, handleGrip: EXPLORER_DRAG_TAP }));
   grok.registerTap(createAtomValueTap(ONBOARDING_FORM, { initial: ONBOARDING_FORM.defaultValue!, handleGrip: ONBOARDING_FORM_TAP }));
+  grok.registerTap(createAtomValueTap(SESSIONS, { initial: SESSIONS.defaultValue!, handleGrip: SESSIONS_TAP }));
+  grok.registerTap(createAtomValueTap(SELECTED_SESSION, { initial: SELECTED_SESSION.defaultValue ?? null, handleGrip: SELECTED_SESSION_TAP }));
+  grok.registerTap(createAtomValueTap(SESSION_SEARCH, { initial: SESSION_SEARCH.defaultValue!, handleGrip: SESSION_SEARCH_TAP }));
+  grok.registerTap(createAtomValueTap(SESSION_FILTER, { initial: SESSION_FILTER.defaultValue!, handleGrip: SESSION_FILTER_TAP }));
+  grok.registerTap(createAtomValueTap(SESSION_DRAFT, { initial: SESSION_DRAFT.defaultValue!, handleGrip: SESSION_DRAFT_TAP }));
+  grok.registerTap(createAtomValueTap(SELECTED_TARGET, { initial: SELECTED_TARGET.defaultValue ?? null, handleGrip: SELECTED_TARGET_TAP }));
+  grok.registerTap(createAtomValueTap(RUN_REPOS, { initial: RUN_REPOS.defaultValue!, handleGrip: RUN_REPOS_TAP }));
+  grok.registerTap(createAtomValueTap(RUN_REPOS_OPEN, { initial: RUN_REPOS_OPEN.defaultValue!, handleGrip: RUN_REPOS_OPEN_TAP }));
+  grok.registerTap(createAtomValueTap(PURGE_DAYS, { initial: PURGE_DAYS.defaultValue!, handleGrip: PURGE_DAYS_TAP }));
   registerGraphSimTap();
   registerFileContentTap();
+  registerSessionOutputTap();
 }

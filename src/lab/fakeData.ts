@@ -342,23 +342,91 @@ export const INITIAL_CHAT: ChatMessage[] = [
   },
 ];
 
+const ESC = '\u001b';
+const green = (s: string) => `${ESC}[32m${s}${ESC}[0m`;
+const red = (s: string) => `${ESC}[31m${s}${ESC}[0m`;
+const dim = (s: string) => `${ESC}[2m${s}${ESC}[0m`;
+
 export const COMMAND_SESSIONS: CommandSession[] = [
   {
     id: 'sess-42',
     peerId: 'me',
-    cwd: 'yidl',
     argv: ['uv', 'run', 'pytest', '-q', 'tests/generation/test_yidl_lark_parser.py'],
     startedAt: 1716950500000,
-    exitCode: 0,
-    output: '...\n2963 passed in 12.4s\n',
+    targets: [
+      {
+        repoPath: 'yidl',
+        exitCode: 0,
+        durationMs: 12400,
+        output: `${dim('============================= test session starts =============================')}\ncollected 2963 items\n\n${green('2963 passed')} in 12.40s\n`,
+      },
+    ],
+  },
+  {
+    // A single command run across multiple repos — one entry, per-repo results.
+    id: 'sess-50',
+    peerId: 'me',
+    argv: ['uv', 'run', 'pytest', '-q'],
+    startedAt: 1716952000000,
+    targets: [
+      {
+        repoPath: 'yidl',
+        exitCode: 1,
+        durationMs: 8700,
+        output: `${dim('============================= test session starts =============================')}\ncollected 2965 items\n\ntests/generation/test_yidl_lark_parser.py ......${red('F')}.....${red('F')}\n\n${red('=================================== FAILURES ===================================')}\n${red('____________________ test_parse_named_variadic_kwargs _________________________')}\n\n    assert parsed.kind == "kwargs"\n${red('E   AssertionError: assert \'args\' == \'kwargs\'')}\n\ntests/generation/test_yidl_lark_parser.py:1840: AssertionError\n\n${red('=========================== short test summary info ============================')}\n${red('FAILED tests/generation/test_yidl_lark_parser.py::test_parse_named_variadic_kwargs - AssertionError')}\n${red('FAILED tests/generation/test_yidl_lark_parser.py::test_export_line_roundtrip - KeyError: \'export\'')}\n${red('2 failed')}, 2963 passed in 8.70s\n`,
+      },
+      {
+        repoPath: 'astichi',
+        exitCode: 0,
+        durationMs: 5200,
+        output: `${dim('============================= test session starts =============================')}\ncollected 814 items\n\n${green('814 passed')} in 5.20s\n`,
+      },
+      {
+        repoPath: '',
+        exitCode: null,
+        output: `${dim('============================= test session starts =============================')}\ncollecting ...`,
+      },
+    ],
   },
   {
     id: 'sess-43',
     peerId: 'alice',
-    cwd: '',
     argv: ['git', 'status'],
     startedAt: 1716951000000,
-    exitCode: 0,
-    output: 'On branch feature/parser\nChanges not staged for commit:\n  modified: src/yidl/concept_parser.py\n',
+    targets: [
+      {
+        repoPath: '',
+        exitCode: 0,
+        durationMs: 120,
+        output: 'On branch feature/parser\nChanges not staged for commit:\n  (use "git add <file>..." to update what will be committed)\n        modified:   src/yidl/concept_parser.py\n',
+      },
+    ],
+  },
+  {
+    id: 'sess-61',
+    peerId: 'me',
+    argv: ['npm', 'run', 'build'],
+    startedAt: 1716953000000,
+    targets: [
+      {
+        repoPath: 'grip-lab',
+        exitCode: null,
+        output: `${dim('> grip-lab@0.0.0 build')}\n${dim('> tsc -b && vite build')}\n\nvite v7.3.3 building client environment for production...\ntransforming...\n`,
+      },
+    ],
+  },
+  {
+    id: 'sess-70',
+    peerId: 'bob',
+    argv: ['uv', 'run', 'ruff', 'check', '.'],
+    startedAt: 1716953600000,
+    targets: [
+      {
+        repoPath: 'astichi',
+        exitCode: 1,
+        durationMs: 340,
+        output: `${red('src/astichi/engine.py:42:1: F401')} [*] \`os\` imported but unused\n${red('Found 1 error.')}\n`,
+      },
+    ],
   },
 ];

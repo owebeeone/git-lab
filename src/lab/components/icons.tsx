@@ -61,6 +61,14 @@ export function Icon({ name, size = 16 }: { name: string; size?: number }) {
           <path d="M7 3h7l5 5v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" />
         </svg>
       );
+    case 'terminal':
+      return (
+        <svg {...common}>
+          <rect x="3" y="4" width="18" height="16" rx="2" />
+          <path d="M7 9l3 3-3 3" />
+          <path d="M13 15h4" />
+        </svg>
+      );
     case 'chevron':
       return (
         <svg {...common}><path d="M9 6l6 6-6 6" /></svg>

@@ -5,7 +5,7 @@
 // kind) will be promoted to proper domain objects in the design phase per
 // AGENTS.md; they are kept simple here only to iterate on the UI.
 
-export type ViewId = 'onboarding' | 'status' | 'file' | 'diff' | 'chat' | 'settings';
+export type ViewId = 'onboarding' | 'status' | 'file' | 'diff' | 'chat' | 'settings' | 'sessions';
 
 export type ThemeId = 'dark' | 'light';
 
@@ -144,12 +144,31 @@ export interface ChatMessage {
   links: ChatLink[];
 }
 
+// One repo's result within a (possibly multi-repo) command run.
+export interface RepoRun {
+  repoPath: string;        // '' = root repo
+  exitCode: number | null; // null = still running
+  durationMs?: number;
+  output: string;          // may contain ANSI escape codes
+}
+
 export interface CommandSession {
   id: string;
   peerId: string;
-  cwd: string;
   argv: string[];
   startedAt: number;
-  exitCode: number | null;
-  output: string;
+  interactive?: boolean;   // an open PTY/terminal session
+  hidden?: boolean;        // hidden from the default list (not deleted)
+  // One entry per repo the command ran on; selectable individually.
+  targets: RepoRun[];
+}
+
+export type SessionStatusFilter = 'all' | 'errors' | 'running' | 'hidden';
+
+// Parsed diagnostics extracted from a session's output (e.g. test failures).
+export interface SessionDiagnostics {
+  kind: 'pytest' | 'none';
+  failed: number;
+  passed: number;
+  failures: string[];
 }
