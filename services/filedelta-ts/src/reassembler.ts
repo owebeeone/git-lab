@@ -1,4 +1,5 @@
 import type { ResetEvent, TextWindowDelta, TextWindowSnapshot } from "./model.js";
+import { hashBytes } from "./hash.js";
 import { applyOps } from "./ops.js";
 
 export class TextWindowReassembler {
@@ -42,6 +43,9 @@ export class TextWindowReassembler {
     const data = applyOps(this.snapshotValue.data, delta.ops);
     if (data.length !== delta.resultSize) {
       throw new Error("result size mismatch");
+    }
+    if (hashBytes(data) !== delta.resultHash) {
+      throw new Error("result window hash mismatch");
     }
 
     this.snapshotValue = {

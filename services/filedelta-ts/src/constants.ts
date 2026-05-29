@@ -1,0 +1,3 @@
+export const FULL_CONTENT_SIZE_CAP = 1024 * 1024;
+export const WINDOW_BYTES_CAP = 256 * 1024;
+export const DELTA_BYTES_THRESHOLD = 64 * 1024;

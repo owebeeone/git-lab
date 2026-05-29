@@ -47,7 +47,7 @@ const textSnapshotJson = {
   windowId: "win:window",
   fileVersion: "fv000001",
   windowVersion: "wv000001",
-  contentHash: "sha256:alpha",
+  contentHash: "sha256:b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
   kind: "content",
   lineStart: 0,
   lineEnd: 1,
@@ -71,8 +71,8 @@ const textDeltaJson = {
   resultFileVersion: "fv000001",
   baseWindowVersion: "wv000001",
   resultWindowVersion: "wv000002",
-  baseHash: "sha256:alpha",
-  resultHash: "sha256:alphabeta",
+  baseHash: "sha256:b6a98d9ce9a2d9149288fa3df42d377c3e42737afdcdaf714e33c0a100b51060",
+  resultHash: "sha256:e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee",
   lineStart: 0,
   lineEnd: 2,
   totalLines: 2,
@@ -113,6 +113,14 @@ function testApplyOps(): void {
     { op: "insert", offset: 6, length: 0, data: bytes("beta\n") },
   ]);
   assert(sameBytes(result, bytes("alpha\nbeta\ngamma\n")), "insert op applies");
+  assertThrows(
+    () =>
+      applyOps(bytes("abcd"), [
+        { op: "delete", offset: 1, length: 2, data: new Uint8Array() },
+        { op: "replace", offset: 2, length: 1, data: bytes("x") },
+      ]),
+    "overlapping ops rejected",
+  );
 }
 
 function testReassemblerDelta(): void {
@@ -133,7 +141,7 @@ function testReassemblerReset(): void {
       ...textSnapshotJson,
       fileVersion: "fv000002",
       windowVersion: "wv000002",
-      contentHash: "sha256:gamma",
+      contentHash: "sha256:ae9a6306a205417afddd14316cc1d0d5e04a98f1be10865dce643925ee070ce2",
       lineStart: 2,
       lineEnd: 3,
       startByte: 11,
@@ -144,6 +152,21 @@ function testReassemblerReset(): void {
   };
   reassembler.applyReset(reset);
   assert(reassembler.text === "gamma\n", "reset replaces text");
+}
+
+function testResultHashValidation(): void {
+  const reassembler = new TextWindowReassembler();
+  reassembler.applySnapshot(parseTextWindowSnapshot(textSnapshotJson));
+  assertThrows(
+    () =>
+      reassembler.applyDelta(
+        parseTextWindowDelta({
+          ...textDeltaJson,
+          resultHash: "sha256:bad",
+        }),
+      ),
+    "result hash mismatch rejected",
+  );
 }
 
 function testSeqValidation(): void {
@@ -160,3 +183,4 @@ testApplyOps();
 testReassemblerDelta();
 testReassemblerReset();
 testSeqValidation();
+testResultHashValidation();

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .constants import DELTA_BYTES_THRESHOLD
 from .errors import DeltaApplyError
 from .hash import hash_bytes
 from .model import (
@@ -18,7 +19,7 @@ from .ops import apply_ops, diff_bytes
 from .snapshot import make_reset, make_text_window_snapshot
 from .subscriber import FileSubscriber
 
-DEFAULT_DELTA_BYTES_THRESHOLD = 64 * 1024
+DEFAULT_DELTA_BYTES_THRESHOLD = DELTA_BYTES_THRESHOLD
 
 
 class _WindowConnection(Protocol):
@@ -188,10 +189,12 @@ class FileWindowSubscription:
         connection: _WindowConnection,
         subscriber: FileSubscriber,
         window: LineWindow,
+        window_id: str,
     ) -> None:
         self.connection = connection
         self.subscriber = subscriber
         self.requested_window = window
+        self.window_id = window_id
         self.window_version_index = 1
         self.seq = 0
         self.snapshot: TextWindowSnapshot | None = None
@@ -201,7 +204,7 @@ class FileWindowSubscription:
         data = await self.connection.read_bytes()
         self.snapshot = make_text_window_snapshot(
             self.connection.resource_id,
-            self._window_id(),
+            self.window_id,
             data,
             self.requested_window,
             file_version=self.connection.file_version,
@@ -270,6 +273,3 @@ class FileWindowSubscription:
 
     def _format_window_version(self) -> str:
         return f"wv{self.window_version_index:06d}"
-
-    def _window_id(self) -> str:
-        return f"{self.connection.resource_id}:window"

@@ -16,6 +16,11 @@ code, websocket transports, watchdog, git adapters, or UI modules.
   file-change notifications
 - Python-generated fixtures consumed by the TypeScript reassembler
 
+`FileConnection` currently owns text-window subscriptions. Full-file mode is
+available through `make_full_snapshot()` / `make_full_delta()`; service
+integration should build small-file `contentMode: "full"` streams directly with
+those pure helpers until a full-file subscription runtime is added.
+
 ## Verify
 
 From the repo root:

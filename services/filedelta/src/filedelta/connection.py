@@ -21,6 +21,7 @@ class FileConnection:
         self.file_version_index = 1
         self.file_version = self._format_file_version()
         self._subscriptions: list[FileWindowSubscription] = []
+        self._window_id_index = 0
         self._closed = False
 
     async def open(self) -> None:
@@ -42,7 +43,13 @@ class FileConnection:
     ) -> FileWindowSubscription:
         if self._closed:
             raise RuntimeError("connection is closed")
-        subscription = FileWindowSubscription(self, subscriber, window)
+        self._window_id_index += 1
+        subscription = FileWindowSubscription(
+            self,
+            subscriber,
+            window,
+            f"{self.resource_id}:window:{self._window_id_index:06d}",
+        )
         self._subscriptions.append(subscription)
         await subscription.open()
         return subscription

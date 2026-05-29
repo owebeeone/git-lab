@@ -1,6 +1,7 @@
 import type { ByteOp } from "./model.js";
 
 export function applyOps(data: Uint8Array, ops: ByteOp[]): Uint8Array {
+  validateNonOverlappingRanges(ops);
   let result = data;
   for (const op of ops) {
     if (op.offset > result.length) {
@@ -22,6 +23,18 @@ export function applyOps(data: Uint8Array, ops: ByteOp[]): Uint8Array {
     }
   }
   return result;
+}
+
+function validateNonOverlappingRanges(ops: ByteOp[]): void {
+  const ranges = ops
+    .filter((op) => op.op !== "insert")
+    .map((op) => [op.offset, op.offset + op.length] as const)
+    .sort((left, right) => left[0] - right[0]);
+  for (let index = 1; index < ranges.length; index += 1) {
+    if (ranges[index][0] < ranges[index - 1][1]) {
+      throw new Error("ops must not overlap");
+    }
+  }
 }
 
 function concat(...parts: Uint8Array[]): Uint8Array {

@@ -131,6 +131,17 @@ class TextWindowSnapshot:
                 raise DeltaValidationError("line_index offset is beyond window bytes")
             previous = offset
 
+    def to_json_dict(self) -> dict[str, Any]:
+        from .json_codec import text_window_snapshot_to_json
+
+        return text_window_snapshot_to_json(self)
+
+    @classmethod
+    def from_json_dict(cls, value: dict[str, Any]) -> TextWindowSnapshot:
+        from .json_codec import text_window_snapshot_from_json
+
+        return text_window_snapshot_from_json(value)
+
 
 @dataclass(frozen=True)
 class FullDelta:
@@ -163,7 +174,6 @@ class FullDelta:
         self.codec.validate()
         for op in self.ops:
             op.validate_structure()
-
 
 @dataclass(frozen=True)
 class TextWindowDelta:
@@ -230,6 +240,17 @@ class TextWindowDelta:
         for op in self.ops:
             op.validate_structure()
 
+    def to_json_dict(self) -> dict[str, Any]:
+        from .json_codec import text_window_delta_to_json
+
+        return text_window_delta_to_json(self)
+
+    @classmethod
+    def from_json_dict(cls, value: dict[str, Any]) -> TextWindowDelta:
+        from .json_codec import text_window_delta_from_json
+
+        return text_window_delta_from_json(value)
+
 
 @dataclass(frozen=True)
 class ResetEvent:
@@ -245,6 +266,17 @@ class ResetEvent:
         if self.seq < 0:
             raise DeltaValidationError("seq must be non-negative")
         self.snapshot.validate()
+
+    def to_json_dict(self) -> dict[str, Any]:
+        from .json_codec import reset_to_json
+
+        return reset_to_json(self)
+
+    @classmethod
+    def from_json_dict(cls, value: dict[str, Any]) -> ResetEvent:
+        from .json_codec import reset_from_json
+
+        return reset_from_json(value)
 
 
 @dataclass(frozen=True)

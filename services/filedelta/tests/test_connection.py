@@ -86,6 +86,7 @@ class FileConnectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second_subscription.seq, 1)
         self.assertEqual(first_subscription.snapshot.window_version, "wv000002")
         self.assertEqual(second_subscription.snapshot.window_version, "wv000002")
+        self.assertNotEqual(first_subscription.snapshot.window_id, second_subscription.snapshot.window_id)
 
     async def test_close_emits_stop(self) -> None:
         connection = FileConnection("file:sample", self.path)
