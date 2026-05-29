@@ -1,9 +1,10 @@
 import { useGrip, useChildContext, useAtomValueTap } from '@owebeeone/grip-react';
-import { SELECTED_PEER_ID, PEERS, FOCUS_LINE, FILE_REF, FILE_REF_TAP } from '../grips';
-import { FILE_IMAGES } from '../fakeData';
-import type { EditorGroup, FileImage, FileRef, Peer } from '../types';
+import {
+  SELECTED_PEER_ID, PEERS, FOCUS_LINE,
+  FILE_REF, FILE_REF_TAP, ACTIVE_FILE, ACTIVE_FILE_TAP, FILE_CONTENT, FILE_GIT_STATUS,
+} from '../grips';
+import type { EditorGroup, FileRef, Peer } from '../types';
 import { Highlighted } from '../highlight';
-import { resolveContent } from '../content';
 import { dragProps, fileLink, fileLineLink } from '../dnd';
 import { useEditor } from '../useEditor';
 import PeerSelect from './PeerSelect';
@@ -17,9 +18,6 @@ function basename(path: string) {
   const parts = path.split('/');
   return parts[parts.length - 1];
 }
-function imageFor(key: string): FileImage | undefined {
-  return FILE_IMAGES.find((f) => `${f.repoPath}::${f.path}` === key);
-}
 function newGroupId() {
   return `g-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -28,8 +26,6 @@ function newGroupId() {
 // per-instance child grip-context + atom tap (no shared global FILE_REF).
 function EditorColumn(props: {
   group: EditorGroup;
-  peers: Peer[];
-  peerId: string;
   peer?: Peer;
   focusLine: number | null;
   isFocused: boolean;
@@ -40,22 +36,26 @@ function EditorColumn(props: {
   onCloseGroup: (gid: string) => void;
   onFocusGroup: (group: EditorGroup) => void;
 }) {
-  const { group, peers, peerId, peer, focusLine, isFocused, groupsCount } = props;
+  const { group, peer, focusLine, isFocused, groupsCount } = props;
 
-  // View-specific FILE_REF: a child context with its own atom tap.
+  // Per-view child grip-context. We publish this column's destination params
+  // (ACTIVE_FILE, FILE_REF) into it; the FileContentTap reads them and provides
+  // FILE_CONTENT / FILE_GIT_STATUS for this specific destination context.
   // (useChildContext is typed GripContextLike; useAtomValueTap wants the
   // concrete GripContext, which isn't exported — the runtime value is correct.)
   const ctx = useChildContext();
+  // ACTIVE_FILE tracks the column's active tab; changing it re-runs the content
+  // tap for this destination (initial is a memo dep, so it updates on change).
+  useAtomValueTap(ACTIVE_FILE, { ctx: ctx as never, initial: group.active ?? '', tapGrip: ACTIVE_FILE_TAP });
   useAtomValueTap(FILE_REF, { ctx: ctx as never, initial: 'working', tapGrip: FILE_REF_TAP });
+
   const ref = useGrip(FILE_REF, ctx) ?? 'working';
   const refTap = useGrip(FILE_REF_TAP, ctx);
+  const code = useGrip(FILE_CONTENT, ctx) ?? '';
+  const gitStatus = useGrip(FILE_GIT_STATUS, ctx) ?? 'clean';
 
   const active = group.active;
   const info = active ? splitKey(active) : null;
-  const img = active ? imageFor(active) : undefined;
-  const code = active
-    ? (img ? resolveContent(img, peerId, ref, peers) : `// ${info!.repoPath}/${info!.path}\n// (no preview available in the mock)\n`)
-    : '';
 
   return (
     <div
@@ -90,10 +90,11 @@ function EditorColumn(props: {
         {active && info ? (
           <>
             <div className="file-bar">
-              <span className="ref-chip" title="Drag to chat" {...dragProps(fileLink(info.repoPath, info.path, peer))}>
-                ⠿ {info.repoPath}/{info.path}{peer && !peer.isSelf ? ` @${peer.name}` : ''}
-              </span>
-              <span className="spacer" />
+                <span className="ref-chip" title="Drag to chat" {...dragProps(fileLink(info.repoPath, info.path, peer))}>
+                  ⠿ {info.repoPath}/{info.path}{peer && !peer.isSelf ? ` @${peer.name}` : ''}
+                </span>
+                <span className={`state ${gitStatus === 'clean' ? 'clean' : 'dirty'}`}>{gitStatus}</span>
+                <span className="spacer" />
               <div className="ref-toggle">
                 {(['working', 'head'] as FileRef[]).map((r) => (
                   <button key={r} className={ref === r ? 'active' : ''} onClick={() => refTap?.set(r)}>{r}</button>
@@ -172,8 +173,6 @@ export default function FileViewerView() {
               <EditorColumn
                 key={g.id}
                 group={g}
-                peers={peers}
-                peerId={peerId}
                 peer={peer}
                 focusLine={focusLine}
                 isFocused={g.id === activeGroup}

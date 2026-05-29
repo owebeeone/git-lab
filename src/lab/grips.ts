@@ -70,9 +70,15 @@ export const CHAT_COMPOSER_H_TAP = defineGrip<AtomTapHandle<number>>('Lab.ChatCo
 export const CHAT_COMPOSER_DRAG = defineGrip<ComposerDrag | null>('Lab.ChatComposerDrag', null);
 export const CHAT_COMPOSER_DRAG_TAP = defineGrip<AtomTapHandle<ComposerDrag | null>>('Lab.ChatComposerDrag.Tap');
 
-// File viewer ref toggle + explorer collapsed folders
+// Per-view (editor column) destination params, read by the FileContentTap.
 export const FILE_REF = defineGrip<FileRef>('Lab.FileRef', 'working');
 export const FILE_REF_TAP = defineGrip<AtomTapHandle<FileRef>>('Lab.FileRef.Tap');
+export const ACTIVE_FILE = defineGrip<string>('Lab.View.ActiveFile', '');
+export const ACTIVE_FILE_TAP = defineGrip<AtomTapHandle<string>>('Lab.View.ActiveFile.Tap');
+
+// Outputs produced by the FileContentTap per destination context.
+export const FILE_CONTENT = defineGrip<string>('Lab.View.FileContent', '');
+export const FILE_GIT_STATUS = defineGrip<string>('Lab.View.FileGitStatus', 'clean');
 export const EXPLORER_COLLAPSED = defineGrip<string[]>('Lab.ExplorerCollapsed', []);
 export const EXPLORER_COLLAPSED_TAP = defineGrip<AtomTapHandle<string[]>>('Lab.ExplorerCollapsed.Tap');
 

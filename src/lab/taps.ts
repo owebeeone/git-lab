@@ -28,6 +28,7 @@ import {
   ONBOARDING_FORM, ONBOARDING_FORM_TAP,
 } from './grips';
 import { registerGraphSimTap } from './graphEngine';
+import { registerFileContentTap } from './fileContentTap';
 
 // All mock state is held in simple settable atom taps. When the backend lands,
 // these get replaced by taps that subscribe to the delta protocol; the
@@ -59,4 +60,5 @@ export function registerLabTaps() {
   grok.registerTap(createAtomValueTap(EXPLORER_DRAG, { initial: EXPLORER_DRAG.defaultValue ?? null, handleGrip: EXPLORER_DRAG_TAP }));
   grok.registerTap(createAtomValueTap(ONBOARDING_FORM, { initial: ONBOARDING_FORM.defaultValue!, handleGrip: ONBOARDING_FORM_TAP }));
   registerGraphSimTap();
+  registerFileContentTap();
 }
