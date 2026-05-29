@@ -17,7 +17,7 @@ Before starting:
 
 - worktree is clean
 - delta file protocol is at least `delta-build/phase-8-filedelta-hardening`
-- service start tag is chosen, e.g. `services-build/start`
+- service start tag is chosen, e.g. `serv-grip-build/start`
 - frontend mock mode remains available and green
 - `createAsyncStreamMultiTap` availability is decided for this checkout
 
@@ -482,19 +482,19 @@ Exit:
 Use one tag prefix for the combined service/UI rollout:
 
 ```text
-services-build/start
-services-build/step-0-protocol-ui-bundle
-services-build/step-1-local-client-service-client
-services-build/step-2-workspace-deps
-services-build/step-3-tree-explorer
-services-build/step-4-file-windows
-services-build/step-5-sessions-terminals
-services-build/step-6-local-service-app
-services-build/step-7-hub-presence
-services-build/step-8-ssh-onboarding
-services-build/step-9-chat
-services-build/step-10-cross-peer
-services-build/step-11-hardening
+serv-grip-build/start
+serv-grip-build/step-0-protocol-ui-bundle
+serv-grip-build/step-1-local-client-service-client
+serv-grip-build/step-2-workspace-deps
+serv-grip-build/step-3-tree-explorer
+serv-grip-build/step-4-file-windows
+serv-grip-build/step-5-sessions-terminals
+serv-grip-build/step-6-local-service-app
+serv-grip-build/step-7-hub-presence
+serv-grip-build/step-8-ssh-onboarding
+serv-grip-build/step-9-chat
+serv-grip-build/step-10-cross-peer
+serv-grip-build/step-11-hardening
 ```
 
 ## Guardrails
