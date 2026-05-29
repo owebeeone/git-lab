@@ -35,20 +35,53 @@ Inputs:
 
 Deliverables:
 
-- Either release/update `@owebeeone/grip-core` and `@owebeeone/grip-react`, or
-  pin a local workspace dependency for the service tap roll-build.
-- Update `GLIntegrationPlan.md` if the final stream tap API differs from the
-  spike.
+- Merge and publish `@owebeeone/grip-core` with `createAsyncStreamMultiTap`, or
+  pin a local workspace dependency during the roll-build.
+- Bump `@owebeeone/grip-core` in `@owebeeone/grip-react`, then release
+  `@owebeeone/grip-react`, or pin both packages locally.
+- Bump `grip-lab` to the released or locally pinned `@owebeeone/grip-react`.
+- Update parent workspace submodule pins when local checkout references matter.
+- Update `GLIntegrationPlan.md` so it describes the one-shot vs stream tap
+  split, not a blanket `createAsyncMultiTap` rule for every non-trivial tap.
+- Mark the stream update mechanism open decision in `GLIntegrationPlan.md` as
+  resolved once the final stream tap API is selected.
 
 Verification:
 
 - `grip-core` stream tap tests pass.
-- grip-lab build can import the chosen stream tap API.
+- `grip-react` exports the stream tap API.
+- `grip-lab` build can import the chosen stream tap API through
+  `@owebeeone/grip-react`.
 
 Exit:
 
 - service taps have a supported primitive for subscribe/update/unsubscribe
   lifecycles.
+- `import { createAsyncStreamMultiTap } from "@owebeeone/grip-react"` works in
+  `grip-lab`.
+
+## Tap Primitive Rules
+
+Use stream taps for long-lived subscriptions and one-shot async taps for bounded
+request/response calls.
+
+| Tap | Primitive | Reason |
+| --- | --- | --- |
+| `workspaceStatusTap.ts` | `createAsyncStreamMultiTap` | `workspace.status.subscribe` stream |
+| `treeTap.ts` | `createAsyncStreamMultiTap` | `tree.subscribe` stream |
+| `fileContentTap.ts` | `createAsyncStreamMultiTap` | `file.subscribe` plus window updates |
+| `sessionsTap.ts` | `createAsyncStreamMultiTap` | `sessions.subscribe` stream |
+| `sessionOutputTap.ts` | `createAsyncStreamMultiTap` | `session.output.subscribe` stream |
+| `terminalTap.ts` | `createAsyncStreamMultiTap` | PTY output stream plus input helpers |
+| `chatMessagesTap.ts` | `createAsyncStreamMultiTap` | `chat.subscribe` stream |
+| `peersTap.ts` | `createAsyncStreamMultiTap` | presence stream |
+| `depsGraphTap.ts` | `createAsyncMultiTap` | `deps.get` one-shot |
+| `probeTap.ts` | `createAsyncMultiTap` | `peer.probe` one-shot |
+| `serviceStateTap.ts` | atom tap or one-shot async tap | connection lifecycle state, not content data |
+
+`ServiceClient.subscribe()` should expose an async event stream that can be
+consumed by `createAsyncStreamMultiTap`. One-shot taps should use the normal
+request/response path.
 
 ## Combined Step 0: Protocol Skeleton + UI Tap-Bundle Split
 
@@ -65,15 +98,20 @@ Deliverables:
 - `services/griplab_service` package skeleton.
 - Python protocol envelope and stream event models.
 - TypeScript protocol interfaces/validators in the chosen frontend location.
+- service-owned grips split into `grips.service.ts`; UI atoms stay in
+  `grips.ts`.
 - `registerLabMockTaps()`.
 - `registerLabServiceTaps()` stub.
 - `VITE_GL_DATA=mock|service` bootstrap switch.
+- `vitest` or the chosen unit-test harness for `src/lab/serviceClient/**`.
+- `test:unit` script if `npm test` remains reserved for existing project checks.
 - Mock mode remains the default.
 
 Verification:
 
 - protocol encode/decode tests pass in Python.
 - TypeScript protocol validator tests pass.
+- service client/tap unit-test harness can run with a fake transport.
 - `npm run build`
 - `npm run lint`
 - `npm test`
@@ -102,9 +140,13 @@ Deliverables:
 - health/probe endpoint.
 - single-instance takeover skeleton.
 - browser `ServiceClient`.
+- `serviceStateTap.ts` for `SERVICE_CONNECTION` with disconnected, connected,
+  reconnecting, and error states.
 - stream id allocation.
 - request id allocation.
 - protocol envelope validation.
+- `VITE_GL_SERVICE_URL`, defaulting to the local client websocket URL from the
+  generated local config when not explicitly set.
 - fake service client test harness.
 
 Verification:
@@ -113,6 +155,9 @@ Verification:
 - probe returns OS/shell/git/watchdog capability fields.
 - browser client request/response unit tests.
 - reconnect and unsubscribe behavior unit tests using fake transport.
+- service state tap maps connection lifecycle events.
+- local development recipe works: start `griplab client`, then run the app with
+  `VITE_GL_DATA=service`.
 
 Exit:
 
@@ -141,6 +186,9 @@ Deliverables:
 - service `workspaceStatusTap.ts`.
 - service `depsGraphTap.ts`.
 - mock providers for `WORKSPACE_STATUS` and any new graph data grips.
+- `WorkspaceStatusView` reads workspace grips, not `fakeData`.
+- `WorkspaceGraphView` and graph helpers read graph grips, not static
+  dependency edge data.
 
 Verification:
 
@@ -149,6 +197,8 @@ Verification:
 - workspace status tap maps snapshots/deltas.
 - deps tap maps root/submodule graph.
 - mock and service fixture modes render workspace status and graph.
+- source scan confirms workspace status and graph views no longer import
+  `fakeData` for these data paths.
 
 Exit:
 
@@ -205,6 +255,9 @@ Deliverables:
 - websocket mapping for `file.subscribe`, `file.window.update`,
   `file.unsubscribe`, snapshots, deltas, resets, and errors.
 - browser service `fileContentTap.ts`.
+- `services/filedelta-ts` import wrapped by a frontend module such as
+  `src/lab/serviceClient/filedelta/index.ts`; package wiring is via `file:`
+  dependency or an explicit path alias, not scattered relative imports.
 - `FILE_WINDOW`, `FILE_WINDOW_TAP`, `FILE_STREAM_STATUS`, `FILE_LINE_INDEX`.
 - per-column window tracking in file viewer.
 - TypeScript filedelta reassembler integrated into the tap.
@@ -226,6 +279,8 @@ Verification:
 - two editor columns viewing the same file maintain independent windows.
 - scroll changes `FILE_WINDOW` and sends `file.window.update`.
 - manual local file edit updates content.
+- mock diff/file consumers are moved toward grip-fed file data where practical,
+  without requiring cross-peer diff service behavior yet.
 
 Exit:
 
@@ -254,6 +309,7 @@ Deliverables:
 - `sessions.query`.
 - service `sessionsTap.ts`.
 - service `sessionOutputTap.ts`.
+- service `terminalTap.ts` for interactive PTY output, input, resize, and close.
 - command helper bridge used by `SessionsView` in service mode.
 - shared diagnostics parser utility.
 
@@ -266,18 +322,23 @@ Verification:
 - session list reconstructs after restart.
 - sessions query by command/output/peer/repo/status.
 - session taps map snapshots/deltas/output append.
+- terminal tap opens, streams output, sends input, resizes, closes, and cleans up
+  when listeners are gone.
 - mock session run behavior still works in mock mode.
+- source scan confirms `SessionsView` no longer imports `fakeData` for service
+  mode data paths.
 
 Exit:
 
 - Sessions view can use service-backed sessions and output.
 - terminal v1 behavior is explicit and tested.
 
-## Combined Step 6: Full Browser Service Client + Local App Without Mocks
+## Combined Step 6: Local Service App Integration Gate
 
 Backend scope:
 
-- Services Phase 8: browser service client and GRIP tap replacement.
+- Services Phase 8: local single-peer integration and GRIP tap replacement
+  hardening.
 
 Frontend scope:
 
@@ -285,12 +346,18 @@ Frontend scope:
 
 Deliverables:
 
-- one browser service client owns all websocket mechanics.
-- stream ref-counting.
-- reconnect/resubscribe.
-- snapshot/delta/reset handling across workspace, tree, file, sessions.
-- service tap registration bundle complete for local single-peer app.
-- render coalescing if needed.
+- real-transport reconnect/resubscribe integration test for the Step 1
+  `ServiceClient`.
+- stream ref-counting integration checks across workspace, tree, file, and
+  session streams.
+- `registerLabServiceTaps()` complete for local single-peer scope.
+- remaining component `fakeData` imports removed or guarded out of service mode
+  for workspace, explorer, file viewer, sessions, and local status surfaces.
+- `SERVICE_CONNECTION` rendered consistently from `serviceStateTap.ts`.
+- service-mode manual script covering `griplab client` plus
+  `VITE_GL_DATA=service npm run dev`.
+- render coalescing or burst-delta debounce only if profiling shows a real
+  problem.
 
 Verification:
 
@@ -299,6 +366,8 @@ Verification:
 - multiple editor columns do not corrupt each other.
 - workspace, explorer, file viewer, and sessions no longer require mock data in
   service mode.
+- source scan confirms core local service views have no unguarded `fakeData`
+  imports.
 - mock mode still passes.
 
 Exit:
@@ -325,7 +394,7 @@ Deliverables:
 - stream relay.
 - route validation.
 - service `peersTap.ts`.
-- connection state surfaced through `SERVICE_CONNECTION`.
+- hub route and peer fields added to `SERVICE_CONNECTION`.
 
 Verification:
 
@@ -355,8 +424,8 @@ Deliverables:
 - SSH target parsing.
 - remote client install/start/update path.
 - service `probeTap.ts`.
-- `ONBOARDING_PROBE_RESULT` or documented decision to write
-  `ONBOARDING_FORM`.
+- `ONBOARDING_PROBE_RESULT` as the dedicated result grip. `ONBOARDING_FORM`
+  remains user input state and is not overloaded with probe output.
 
 Verification:
 
@@ -378,6 +447,8 @@ Backend scope:
 Frontend scope:
 
 - UI Phase F chat portion.
+- Service-mode chat remains a placeholder until this step because message ids
+  and routing depend on the hub from Step 7.
 
 Deliverables:
 
@@ -388,6 +459,8 @@ Deliverables:
 - link schema validation.
 - service `chatMessagesTap.ts`.
 - service composer helper.
+- `ChatView` reads message, file-link, and command-link data from grips in
+  service mode, not directly from `fakeData`.
 
 Verification:
 
@@ -397,6 +470,8 @@ Verification:
 - chat links still apply GRIP state.
 - mock composer still appends locally.
 - service composer posts and receives committed hub message.
+- source scan confirms `ChatView` no longer imports `fakeData` for service mode
+  data paths.
 
 Exit:
 
@@ -421,6 +496,7 @@ Deliverables:
 - remote `cmd.run`.
 - remote session output subscription.
 - service-backed `DiffViewerView` data path.
+- `DiffViewerView` no longer imports static file content for service mode.
 
 Rules:
 

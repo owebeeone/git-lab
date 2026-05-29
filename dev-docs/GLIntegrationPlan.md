@@ -10,7 +10,8 @@ UI in `src/` while keeping the existing mock/test app intact.
 - Add a parallel server-fed tap set that uses the same public UI grips where
   possible, so components move to service data by selecting a tap bundle rather
   than rewriting view code.
-- Use `createAsyncMultiTap<Outs, any>` for every non-trivial server-fed tap.
+- Use `createAsyncStreamMultiTap` for long-lived service subscriptions and
+  `createAsyncMultiTap` for bounded request/response taps.
 - Put each non-trivial service tap in its own `.ts` file.
 - Keep websocket ownership centralized in one browser service client module.
 - Preserve child-context file viewer behavior: each editor column owns its file
@@ -93,6 +94,7 @@ src/lab/
       fileContentTap.ts
       sessionsTap.ts
       sessionOutputTap.ts
+      terminalTap.ts
       chatMessagesTap.ts
       probeTap.ts
 ```
@@ -237,7 +239,7 @@ runtime. Choose one bundle at bootstrap.
 
 ## Service Tap Pattern
 
-Every non-trivial service tap uses:
+Bounded request/response taps use:
 
 ```ts
 createAsyncMultiTap<Outs, any>({
@@ -250,16 +252,39 @@ createAsyncMultiTap<Outs, any>({
 })
 ```
 
-For stream subscriptions, `fetcher` may call the shared service client's
-`subscribeSnapshot()` helper, which returns the current materialized stream
-state after receiving the first snapshot. The helper owns async cancellation and
-unsubscribes when the tap request is aborted.
+Long-lived service subscriptions use:
 
-For long-lived streams, the returned result should be the materialized current
-state plus a subscription handle managed by `streamStore`. Subsequent websocket
-events update the same grip outputs by forcing tap production or through the
-service client's approved GRIP update mechanism. The implementation phase must
-choose one mechanism and test reconnect behavior.
+```ts
+createAsyncStreamMultiTap<Outs, any>({
+  provides,
+  destinationParamGrips,
+  homeParamGrips,
+  requestKeyOf,
+  subscribe,
+  mapEvent,
+})
+```
+
+Stream taps call the shared service client's `subscribe()` helper. The service
+client owns websocket mechanics, cancellation, unsubscribe, reconnect, and
+resubscribe. The tap materializes snapshots, deltas, resets, and errors into the
+same grip outputs.
+
+Primitive split:
+
+| Tap | Primitive |
+| --- | --- |
+| `workspaceStatusTap.ts` | `createAsyncStreamMultiTap` |
+| `treeTap.ts` | `createAsyncStreamMultiTap` |
+| `fileContentTap.ts` | `createAsyncStreamMultiTap` |
+| `sessionsTap.ts` | `createAsyncStreamMultiTap` |
+| `sessionOutputTap.ts` | `createAsyncStreamMultiTap` |
+| `terminalTap.ts` | `createAsyncStreamMultiTap` |
+| `chatMessagesTap.ts` | `createAsyncStreamMultiTap` |
+| `peersTap.ts` | `createAsyncStreamMultiTap` |
+| `depsGraphTap.ts` | `createAsyncMultiTap` |
+| `probeTap.ts` | `createAsyncMultiTap` |
+| `serviceStateTap.ts` | atom tap or one-shot async tap |
 
 ## Taps To Generate
 
@@ -570,7 +595,7 @@ Purpose:
 
 Provides:
 
-- `ONBOARDING_FORM` or a narrower `ONBOARDING_PROBE_RESULT` grip if added
+- `ONBOARDING_PROBE_RESULT`
 
 Params:
 
@@ -582,8 +607,8 @@ Protocol:
 
 Rules:
 
-- Consider adding `ONBOARDING_PROBE_RESULT` instead of letting a service tap
-  overwrite the entire form. That keeps user-entered fields locally owned.
+- Do not write probe results into `ONBOARDING_FORM`. That grip remains
+  browser-owned user input state.
 
 Tests:
 
@@ -840,14 +865,13 @@ Exit:
 
 ## Open Decisions Before Coding
 
-- Whether service taps update outputs only via `mapResult`, or whether stream
-  events may push directly into GRIP through a controlled service-client bridge.
 - Exact test harness for tap execution: reuse existing GRIP runtime in tests or
-  add small tap-level fake contexts.
-- Whether to add new domain grips in `src/lab/grips.service.ts` or keep all grips
-  in `src/lab/grips.ts`.
-- Whether `probeTap.ts` should write `ONBOARDING_FORM` or a narrower
-  `ONBOARDING_PROBE_RESULT`.
+  add small tap-level fake contexts. The combined plan requires a unit-test
+  harness before service taps land.
+- Add new service-owned domain grips in `src/lab/grips.service.ts`; keep local
+  UI atom grips in `src/lab/grips.ts`.
+- `probeTap.ts` writes `ONBOARDING_PROBE_RESULT`. `ONBOARDING_FORM` remains user
+  input state.
 - Whether graph service output should directly provide `GRAPH_NODES` or a new
   `DEPS_GRAPH` grip with a derived render-node tap.
 
