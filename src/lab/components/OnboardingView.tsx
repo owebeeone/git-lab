@@ -1,6 +1,11 @@
 import { useGrip } from '@owebeeone/grip-react';
-import { PEERS, PEERS_TAP, ONBOARDING_FORM, ONBOARDING_FORM_TAP } from '../grips';
-import type { OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
+import {
+  PEERS, PEERS_TAP, ONBOARDING_FORM, ONBOARDING_FORM_TAP,
+  COLLAB_EDIT, COLLAB_EDIT_TAP, AVATAR_EDIT, AVATAR_EDIT_TAP,
+} from '../grips';
+import type { CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
+import { STOCK_AVATARS, LETTER_COLORS } from '../avatars';
+import Avatar from './Avatar';
 
 const DEFAULT_PORT = 3141; // signature port (π) — uncommon, memorable
 const EMPTY_FORM: OnboardingForm = { name: '', ssh: '', location: '', conn: { status: 'idle' } };
@@ -26,6 +31,15 @@ export default function OnboardingView() {
   const form = useGrip(ONBOARDING_FORM) ?? EMPTY_FORM;
   const formTap = useGrip(ONBOARDING_FORM_TAP);
   const setForm = (patch: Partial<OnboardingForm>) => formTap?.set({ ...form, ...patch });
+
+  const edit = useGrip(COLLAB_EDIT) ?? null;
+  const editTap = useGrip(COLLAB_EDIT_TAP);
+  const avatarEdit = useGrip(AVATAR_EDIT) ?? null;
+  const avatarEditTap = useGrip(AVATAR_EDIT_TAP);
+  const avatarPeer = peers.find((p) => p.id === avatarEdit);
+
+  const updatePeer = (id: string, patch: Partial<Peer>) =>
+    peersTap?.set(peers.map((p) => (p.id === id ? { ...p, ...patch } : p)));
 
   // Connect/probe the connection string (synchronous in the mock).
   const connect = (address: string) => {
@@ -60,21 +74,48 @@ export default function OnboardingView() {
     peersTap?.set(peers.map((p) => (p.id === id ? { ...p, os: r.os, shells: r.shells, online: r.online } : p)));
   };
 
+  // Inline-editable cell: click to edit, commit on blur/Enter.
+  const cell = (p: Peer, field: CollabEdit['field'], mono = false) => {
+    const editing = edit?.peerId === p.id && edit?.field === field;
+    if (editing) {
+      return (
+        <input
+          autoFocus
+          className={`cell-input${mono ? ' mono' : ''}`}
+          value={p[field]}
+          onChange={(e) => updatePeer(p.id, { [field]: e.target.value })}
+          onBlur={() => editTap?.set(null)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === 'Escape') editTap?.set(null); }}
+        />
+      );
+    }
+    return (
+      <span className={`cell-edit${mono ? ' mono' : ''}`} title="Click to edit" onClick={() => editTap?.set({ peerId: p.id, field })}>
+        {p[field] || <span className="muted">—</span>}
+      </span>
+    );
+  };
+
   return (
     <section className="view">
       <table className="peer-table">
         <thead>
           <tr>
-            <th>Name</th><th>ssh address</th><th>Location</th>
+            <th></th><th>Name</th><th>ssh address</th><th>Location</th>
             <th>OS</th><th>Shells</th><th>Status</th><th></th>
           </tr>
         </thead>
         <tbody>
           {peers.map((p) => (
             <tr key={p.id}>
-              <td>{p.name}{p.isSelf ? ' (you)' : ''}</td>
-              <td className="mono">{p.sshAddress}</td>
-              <td className="mono">{p.location}</td>
+              <td>
+                <button className="avatar-btn" onClick={() => avatarEditTap?.set(p.id)} title="Edit avatar">
+                  <Avatar peer={p} size={26} />
+                </button>
+              </td>
+              <td>{cell(p, 'name')}{p.isSelf ? <span className="muted"> (you)</span> : null}</td>
+              <td>{cell(p, 'sshAddress', true)}</td>
+              <td>{cell(p, 'location', true)}</td>
               <td>{p.os ? OS_LABEL[p.os] : <span className="muted">unknown</span>}</td>
               <td>{p.shells.length ? p.shells.join(', ') : <span className="muted">—</span>}</td>
               <td><span className={`dot ${p.online ? 'on' : 'off'}`} />{p.online ? 'online' : 'offline'}</td>
@@ -86,6 +127,58 @@ export default function OnboardingView() {
           ))}
         </tbody>
       </table>
+
+      {avatarPeer && (
+        <div className="modal-backdrop" onClick={() => avatarEditTap?.set(null)}>
+          <div className="modal avatar-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <strong>Avatar — {avatarPeer.name}</strong>
+              <button className="ghost" onClick={() => avatarEditTap?.set(null)} title="Close">×</button>
+            </div>
+            <div className="modal-body">
+              <div className="avatar-preview">
+                <Avatar peer={avatarPeer} size={56} />
+              </div>
+              <div className="field-label">Images</div>
+              <div className="avatar-grid">
+                {STOCK_AVATARS.map((s) => {
+                  const sel = avatarPeer.avatar?.kind === 'stock' && avatarPeer.avatar.id === s.id;
+                  return (
+                    <button
+                      key={s.id}
+                      className={`avatar-pick${sel ? ' sel' : ''}`}
+                      style={{ background: s.bg }}
+                      title={s.id}
+                      onClick={() => updatePeer(avatarPeer.id, { avatar: { kind: 'stock', id: s.id } })}
+                    >
+                      {s.emoji}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="field-label">Letter color</div>
+              <div className="color-row">
+                {LETTER_COLORS.map((c) => {
+                  const sel = avatarPeer.avatar?.kind === 'letter' && avatarPeer.avatar.color === c;
+                  return (
+                    <button
+                      key={c}
+                      className={`color-swatch${sel ? ' sel' : ''}`}
+                      style={{ background: c }}
+                      title={c}
+                      onClick={() => updatePeer(avatarPeer.id, { avatar: { kind: 'letter', color: c } })}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="ghost" onClick={() => updatePeer(avatarPeer.id, { avatar: undefined })}>Use default</button>
+              <button className="primary" onClick={() => avatarEditTap?.set(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="add-peer">
         <h3>Add collaborator</h3>

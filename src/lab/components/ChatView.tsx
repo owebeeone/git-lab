@@ -15,6 +15,7 @@ import { FILE_IMAGES, COMMAND_SESSIONS, REPO_STATUS_BY_PEER, SELF_ID } from '../
 import type { ChatLink, ChatMessage } from '../types';
 import { parseStateUrl } from '../stateUrl';
 import { useEditor } from '../useEditor';
+import Avatar from './Avatar';
 
 const LINK_ICON: Record<string, string> = {
   file: '📄', repo: '📁', peer: '👤', session: '⌘', state: '📍',
@@ -151,6 +152,7 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
             className={`chat-msg${m.senderId === SELF_ID ? ' mine' : ''}`}
           >
             <div className="chat-meta">
+              <Avatar peer={peers.find((p) => p.id === m.senderId)} size={18} />
               <strong>{nameOf(m.senderId)}</strong>
               <span className="muted">{new Date(m.ts).toLocaleTimeString()}</span>
             </div>

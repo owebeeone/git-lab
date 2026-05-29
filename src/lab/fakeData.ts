@@ -19,6 +19,7 @@ export const INITIAL_PEERS: Peer[] = [
   {
     id: 'me',
     name: 'You',
+    avatar: { kind: 'stock', id: 'fox' },
     sshAddress: 'you@localhost:3141',
     location: '~/work/grip-pyrolyze-dev',
     os: 'macos',
@@ -29,6 +30,7 @@ export const INITIAL_PEERS: Peer[] = [
   {
     id: 'alice',
     name: 'Alice',
+    avatar: { kind: 'stock', id: 'panda' },
     sshAddress: 'alice@10.0.0.21:22',
     location: '~/src/grip-pyrolyze-dev',
     os: 'linux',

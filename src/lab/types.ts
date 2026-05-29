@@ -13,9 +13,18 @@ export type OsKind = 'macos' | 'linux' | 'windows';
 
 export type ShellKind = 'bash' | 'zsh' | 'powershell';
 
+// A stock avatar image (emoji on a colored circle — no binary assets).
+export interface StockAvatar { id: string; emoji: string; bg: string }
+// A peer's chosen avatar: a stock image or a Google-style colored letter.
+export type Avatar = { kind: 'stock'; id: string } | { kind: 'letter'; color: string };
+
+// Which collaborator field is being inline-edited.
+export interface CollabEdit { peerId: string; field: 'name' | 'sshAddress' | 'location' }
+
 export interface Peer {
   id: string;
   name: string;
+  avatar?: Avatar;
   // ssh address used to reach the peer, e.g. "alice@host:22"
   sshAddress: string;
   // remote workspace root (git repo root) on that machine. The same machine can
@@ -163,7 +172,8 @@ export interface CommandSession {
   targets: RepoRun[];
 }
 
-export type SessionStatusFilter = 'all' | 'errors' | 'running' | 'hidden';
+// Independent filter modifiers (toggles), not mutually exclusive.
+export type SessionFilterMod = 'errors' | 'running' | 'hidden';
 
 // Parsed diagnostics extracted from a session's output (e.g. test failures).
 export interface SessionDiagnostics {

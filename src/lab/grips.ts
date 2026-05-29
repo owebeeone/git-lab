@@ -3,7 +3,7 @@ import { defineGrip } from '../runtime';
 import type {
   ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId,
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
-  CommandSession, SessionStatusFilter, SessionDiagnostics,
+  CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
 } from './types';
 import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
@@ -94,6 +94,11 @@ export const EXPLORER_DRAG_TAP = defineGrip<AtomTapHandle<ResizeDrag | null>>('L
 // Onboarding add-collaborator form + per-row check-in-progress
 export const ONBOARDING_FORM = defineGrip<OnboardingForm>('Lab.OnboardingForm', { name: '', ssh: '', location: '', conn: { status: 'idle' } });
 export const ONBOARDING_FORM_TAP = defineGrip<AtomTapHandle<OnboardingForm>>('Lab.OnboardingForm.Tap');
+// Inline-editing state in the collaborators table; avatar editor target.
+export const COLLAB_EDIT = defineGrip<CollabEdit | null>('Lab.CollabEdit', null);
+export const COLLAB_EDIT_TAP = defineGrip<AtomTapHandle<CollabEdit | null>>('Lab.CollabEdit.Tap');
+export const AVATAR_EDIT = defineGrip<string | null>('Lab.AvatarEdit', null);
+export const AVATAR_EDIT_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.AvatarEdit.Tap');
 
 // Workspace graph nodes (published by the GraphSim tap engine)
 export const GRAPH_NODES = defineGrip<GraphRenderNode[]>('Lab.GraphNodes', []);
@@ -105,8 +110,8 @@ export const SELECTED_SESSION = defineGrip<string | null>('Lab.SelectedSession',
 export const SELECTED_SESSION_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.SelectedSession.Tap');
 export const SESSION_SEARCH = defineGrip<string>('Lab.SessionSearch', '');
 export const SESSION_SEARCH_TAP = defineGrip<AtomTapHandle<string>>('Lab.SessionSearch.Tap');
-export const SESSION_FILTER = defineGrip<SessionStatusFilter>('Lab.SessionFilter', 'all');
-export const SESSION_FILTER_TAP = defineGrip<AtomTapHandle<SessionStatusFilter>>('Lab.SessionFilter.Tap');
+export const SESSION_FILTERS = defineGrip<SessionFilterMod[]>('Lab.SessionFilters', []);
+export const SESSION_FILTERS_TAP = defineGrip<AtomTapHandle<SessionFilterMod[]>>('Lab.SessionFilters.Tap');
 export const SESSION_DRAFT = defineGrip<string>('Lab.SessionDraft', '');
 export const SESSION_DRAFT_TAP = defineGrip<AtomTapHandle<string>>('Lab.SessionDraft.Tap');
 // Active repo (target) within the selected session.
@@ -120,6 +125,9 @@ export const RUN_REPOS_OPEN_TAP = defineGrip<AtomTapHandle<boolean>>('Lab.RunRep
 // Purge threshold (days) for the "purge sessions older than N days" tool.
 export const PURGE_DAYS = defineGrip<number>('Lab.PurgeDays', 7);
 export const PURGE_DAYS_TAP = defineGrip<AtomTapHandle<number>>('Lab.PurgeDays.Tap');
+// "Run a command" dialog open state.
+export const RUN_DIALOG_OPEN = defineGrip<boolean>('Lab.RunDialogOpen', false);
+export const RUN_DIALOG_OPEN_TAP = defineGrip<AtomTapHandle<boolean>>('Lab.RunDialogOpen.Tap');
 
 // Outputs of the SessionOutputTap (home params: SESSIONS + SELECTED_SESSION).
 export const SESSION_OUTPUT = defineGrip<string>('Lab.SessionOutput', '');

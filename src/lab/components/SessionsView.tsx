@@ -3,21 +3,24 @@ import {
   SESSIONS, SESSIONS_TAP,
   SELECTED_SESSION, SELECTED_SESSION_TAP,
   SELECTED_TARGET, SELECTED_TARGET_TAP,
+  SELECTED_PEER_ID_TAP,
   SESSION_SEARCH, SESSION_SEARCH_TAP,
-  SESSION_FILTER, SESSION_FILTER_TAP,
+  SESSION_FILTERS, SESSION_FILTERS_TAP,
   SESSION_DRAFT, SESSION_DRAFT_TAP,
-  RUN_REPOS, RUN_REPOS_TAP, RUN_REPOS_OPEN, RUN_REPOS_OPEN_TAP,
+  RUN_REPOS, RUN_REPOS_TAP,
   PURGE_DAYS, PURGE_DAYS_TAP,
+  RUN_DIALOG_OPEN, RUN_DIALOG_OPEN_TAP,
   SESSION_OUTPUT, SESSION_DIAGNOSTICS,
   PEERS, SELECTED_PEER_ID, THEME,
 } from '../grips';
 import { REPO_STATUS_BY_PEER } from '../fakeData';
-import type { CommandSession, RepoRun, SessionStatusFilter } from '../types';
+import type { CommandSession, RepoRun, SessionFilterMod } from '../types';
 import { createTerminal } from '../terminalController';
 import PeerSelect from './PeerSelect';
+import Avatar from './Avatar';
 
-const FILTERS: { id: SessionStatusFilter; label: string }[] = [
-  { id: 'all', label: 'All' },
+// Independent filter modifiers (toggle on/off, compose together).
+const FILTERS: { id: SessionFilterMod; label: string }[] = [
   { id: 'errors', label: 'Errors' },
   { id: 'running', label: 'Running' },
   { id: 'hidden', label: 'Hidden' },
@@ -40,6 +43,23 @@ function sessionStatus(s: CommandSession): Status {
 function repoLabel(p: string) { return p || 'root'; }
 function fmtTime(ts: number) { return new Date(ts).toLocaleTimeString(); }
 function fmtDur(ms?: number) { return ms == null ? '' : ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`; }
+
+// Lightweight "does this command make sense?" check for the run dialog.
+function validateCommand(cmd: string, repoCount: number): { errors: string[]; warnings: string[]; argv: string[] } {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const trimmed = cmd.trim();
+  const argv = trimmed ? trimmed.split(/\s+/) : [];
+  if (!trimmed) errors.push('Enter a command to run.');
+  if (repoCount === 0) errors.push('Select at least one repo.');
+  if (/\brm\s+-rf?\b/.test(trimmed) || /\bsudo\b/.test(trimmed) || /:\(\)\s*\{.*\};\s*:/.test(trimmed) || />\s*\/dev\/sd/.test(trimmed)) {
+    warnings.push('Looks potentially destructive — double-check before running.');
+  }
+  if (trimmed && /^[A-Z_]+=/.test(trimmed)) {
+    warnings.push('Starts with an env assignment; the runner executes a program, not a shell line.');
+  }
+  return { errors, warnings, argv };
+}
 
 function TerminalPane({ termKey, content, interactive, dark }: { termKey: string; content: string; interactive: boolean; dark: boolean }) {
   return (
@@ -64,33 +84,40 @@ export default function SessionsView() {
   const selectedTargetTap = useGrip(SELECTED_TARGET_TAP);
   const search = useGrip(SESSION_SEARCH) ?? '';
   const searchTap = useGrip(SESSION_SEARCH_TAP);
-  const filter = useGrip(SESSION_FILTER) ?? 'all';
-  const filterTap = useGrip(SESSION_FILTER_TAP);
+  const filters = useGrip(SESSION_FILTERS) ?? [];
+  const filtersTap = useGrip(SESSION_FILTERS_TAP);
+  const toggleFilter = (mod: SessionFilterMod) =>
+    filtersTap?.set(filters.includes(mod) ? filters.filter((m) => m !== mod) : [...filters, mod]);
+  const showHidden = filters.includes('hidden');
   const draft = useGrip(SESSION_DRAFT) ?? '';
   const draftTap = useGrip(SESSION_DRAFT_TAP);
   const runRepos = useGrip(RUN_REPOS) ?? [''];
   const runReposTap = useGrip(RUN_REPOS_TAP);
-  const reposOpen = useGrip(RUN_REPOS_OPEN) ?? false;
-  const reposOpenTap = useGrip(RUN_REPOS_OPEN_TAP);
+  const dialogOpen = useGrip(RUN_DIALOG_OPEN) ?? false;
+  const dialogTap = useGrip(RUN_DIALOG_OPEN_TAP);
   const purgeDays = useGrip(PURGE_DAYS) ?? 7;
   const purgeDaysTap = useGrip(PURGE_DAYS_TAP);
   const output = useGrip(SESSION_OUTPUT) ?? '';
   const diag = useGrip(SESSION_DIAGNOSTICS) ?? { kind: 'none', failed: 0, passed: 0, failures: [] };
   const peers = useGrip(PEERS) ?? [];
   const targetPeer = useGrip(SELECTED_PEER_ID) ?? '';
+  const peerTap = useGrip(SELECTED_PEER_ID_TAP);
   const theme = useGrip(THEME) ?? 'dark';
 
   const nameOf = (id: string) => peers.find((p) => p.id === id)?.name ?? id;
   const availableRepos = REPO_STATUS_BY_PEER[targetPeer] ?? [];
 
   const hiddenCount = sessions.filter((s) => s.hidden).length;
+  const wantErrors = filters.includes('errors');
+  const wantRunning = filters.includes('running');
   const q = search.trim().toLowerCase();
   const visible = sessions.filter((s) => {
-    if (filter === 'hidden') { if (!s.hidden) return false; }
-    else if (s.hidden) return false; // hidden sessions only show under the Hidden filter
-    const st = sessionStatus(s);
-    if (filter === 'errors' && st !== 'error') return false;
-    if (filter === 'running' && st !== 'running') return false;
+    if (s.hidden && !showHidden) return false; // hidden excluded unless the Hidden modifier is on
+    if (wantErrors || wantRunning) {
+      const st = sessionStatus(s);
+      const match = (wantErrors && st === 'error') || (wantRunning && st === 'running');
+      if (!match) return false;
+    }
     if (!q) return true;
     return s.argv.join(' ').toLowerCase().includes(q) || s.targets.some((t) => t.output.toLowerCase().includes(q));
   });
@@ -106,8 +133,9 @@ export default function SessionsView() {
 
   const runCommand = () => {
     const cmd = draft.trim();
-    if (!cmd) return;
     const repos = runRepos.length ? runRepos : [''];
+    const { errors } = validateCommand(cmd, runRepos.length);
+    if (errors.length) return;
     const ts = Date.now();
     const targets: RepoRun[] = repos.map((repoPath) => ({
       repoPath,
@@ -120,6 +148,7 @@ export default function SessionsView() {
     selectedTap?.set(session.id);
     selectedTargetTap?.set(targets[0].repoPath);
     draftTap?.set('');
+    dialogTap?.set(false);
   };
 
   const openTerminal = () => {
@@ -137,10 +166,34 @@ export default function SessionsView() {
     selectedTargetTap?.set('');
   };
 
+  // Re-run a session's exact command against the same set of repos.
+  const runAgain = (s: CommandSession) => {
+    const cmd = s.argv.join(' ');
+    const ts = Date.now();
+    const targets: RepoRun[] = s.targets.map((t) => ({
+      repoPath: t.repoPath,
+      exitCode: 0,
+      durationMs: 0,
+      output: `$ ${cmd}\n\u001b[2m(mock) re-ran in ${repoLabel(t.repoPath)} on ${nameOf(s.peerId)}\u001b[0m\n`,
+    }));
+    const ns: CommandSession = { id: `sess-${ts}`, peerId: s.peerId, argv: s.argv, startedAt: ts, targets };
+    sessionsTap?.set([ns, ...sessions]);
+    selectedTap?.set(ns.id);
+    selectedTargetTap?.set(targets[0].repoPath);
+  };
+
+  // Open the run dialog pre-filled from a session (edit command/repos/collaborator).
+  const editSession = (s: CommandSession) => {
+    draftTap?.set(s.argv.join(' '));
+    runReposTap?.set(s.targets.map((t) => t.repoPath));
+    peerTap?.set(s.peerId);
+    dialogTap?.set(true);
+  };
+
   const setHidden = (id: string, hidden: boolean) => {
     sessionsTap?.set(sessions.map((s) => (s.id === id ? { ...s, hidden } : s)));
-    // When hiding the selected session (and not browsing Hidden), move selection on.
-    if (hidden && selected === id && filter !== 'hidden') {
+    // When hiding the selected session (and hidden are not shown), move selection on.
+    if (hidden && selected === id && !showHidden) {
       const nextSel = sessions.find((s) => s.id !== id && !s.hidden);
       selectedTap?.set(nextSel?.id ?? null);
     }
@@ -162,42 +215,87 @@ export default function SessionsView() {
           value={search}
           onChange={(e) => searchTap?.set(e.target.value)}
         />
-        <div className="segmented">
+        <div className="filter-mods">
           {FILTERS.map((f) => (
-            <button key={f.id} className={filter === f.id ? 'active' : ''} onClick={() => filterTap?.set(f.id)}>{f.label}</button>
+            <button
+              key={f.id}
+              className={`filter-mod${filters.includes(f.id) ? ' active' : ''}`}
+              onClick={() => toggleFilter(f.id)}
+            >
+              {f.label}
+            </button>
           ))}
         </div>
         <span className="spacer" />
-        <PeerSelect />
-        {/* repo multi-select */}
-        <div className="repo-multi">
-          <button className="repo-multi-btn" onClick={() => reposOpenTap?.set(!reposOpen)}>
-            {runRepos.length} repo{runRepos.length === 1 ? '' : 's'} ▾
-          </button>
-          {reposOpen && (
-            <>
-              <div className="repo-multi-backdrop" onClick={() => reposOpenTap?.set(false)} />
-              <div className="repo-multi-panel">
-                {availableRepos.map((r) => (
-                  <label key={r.path || 'root'} className="repo-multi-item">
-                    <input type="checkbox" checked={runRepos.includes(r.path)} onChange={() => toggleRepo(r.path)} />
-                    {r.name}<span className="muted"> {r.path || 'root'}</span>
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-        <input
-          className="session-cmd"
-          placeholder="command to run (e.g. uv run pytest -q)"
-          value={draft}
-          onChange={(e) => draftTap?.set(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') runCommand(); }}
-        />
-        <button className="primary" onClick={runCommand}>Run</button>
+        <button className="primary" onClick={() => dialogTap?.set(true)}>Run a command…</button>
         <button className="ghost" onClick={openTerminal}>▶ Terminal</button>
       </div>
+
+      {dialogOpen && (() => {
+        const { errors, warnings, argv } = validateCommand(draft, runRepos.length);
+        const allSelected = availableRepos.length > 0 && availableRepos.every((r) => runRepos.includes(r.path));
+        return (
+          <div className="modal-backdrop" onClick={() => dialogTap?.set(false)}>
+            <div className="modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-head">
+                <strong>Run a command</strong>
+                <button className="ghost" onClick={() => dialogTap?.set(false)} title="Close">×</button>
+              </div>
+              <div className="modal-body modal-cols">
+                <div className="dialog-left">
+                  <div className="field"><PeerSelect /></div>
+                  <div className="field repos-field">
+                    <div className="repo-picker-head">
+                      <span className="field-label">Repos</span>
+                      <span className="spacer" />
+                      <span className="muted">{runRepos.length}/{availableRepos.length}</span>
+                      <button
+                        className="ghost"
+                        onClick={() => runReposTap?.set(allSelected ? [] : availableRepos.map((r) => r.path))}
+                      >
+                        {allSelected ? 'Clear' : 'All'}
+                      </button>
+                    </div>
+                    <div className="repo-picker">
+                      {availableRepos.map((r) => {
+                        const checked = runRepos.includes(r.path);
+                        return (
+                          <label key={r.path || 'root'} className={`repo-pick-row${checked ? ' checked' : ''}`}>
+                            <input type="checkbox" checked={checked} onChange={() => toggleRepo(r.path)} />
+                            <span className="repo-pick-name">{r.name}</span>
+                            <span className="repo-pick-path">{r.path || 'root'}</span>
+                          </label>
+                        );
+                      })}
+                      {availableRepos.length === 0 && <div className="muted repo-pick-empty">No repos for this collaborator.</div>}
+                    </div>
+                  </div>
+                </div>
+                <div className="dialog-right">
+                  <div className="field command-field">
+                    <span className="field-label">Command</span>
+                    <textarea
+                      className="command-area"
+                      placeholder="uv run pytest -q"
+                      value={draft}
+                      onChange={(e) => draftTap?.set(e.target.value)}
+                    />
+                  </div>
+                  {argv.length > 0 && (
+                    <div className="cmd-preview">program: <code>{argv[0]}</code> · {argv.length} token{argv.length === 1 ? '' : 's'} · {runRepos.length} repo{runRepos.length === 1 ? '' : 's'}</div>
+                  )}
+                  {errors.map((e, i) => <div key={i} className="cmd-error">✗ {e}</div>)}
+                  {warnings.map((w, i) => <div key={i} className="cmd-warn">⚠ {w}</div>)}
+                </div>
+              </div>
+              <div className="modal-foot">
+                <button className="ghost" onClick={() => dialogTap?.set(false)}>Cancel</button>
+                <button className="primary" disabled={errors.length > 0} onClick={runCommand}>Run</button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="sessions-body">
         <div className="session-col">
@@ -214,7 +312,7 @@ export default function SessionsView() {
                   <span className={`session-dot ${st}`} />
                   <span className="session-cmdtext">{s.interactive ? 'terminal' : s.argv.join(' ')}</span>
                   <span className="session-sub">
-                    {nameOf(s.peerId)} · {fmtTime(s.startedAt)}
+                    <Avatar peer={peers.find((p) => p.id === s.peerId)} size={13} /> {nameOf(s.peerId)} · {fmtTime(s.startedAt)}
                     {s.targets.length > 1 ? ` · ${s.targets.length} repos` : ` · ${repoLabel(s.targets[0].repoPath)}`}
                   </span>
                   {s.targets.length > 1 && (
@@ -248,8 +346,14 @@ export default function SessionsView() {
             <>
               <div className="session-head">
                 <div className="session-argv">{current.interactive ? `terminal · ${current.argv.join(' ')}` : current.argv.join(' ')}</div>
-                <div className="session-meta">{nameOf(current.peerId)} · {fmtTime(current.startedAt)}</div>
+                <div className="session-meta"><Avatar peer={peers.find((p) => p.id === current.peerId)} size={16} /> {nameOf(current.peerId)} · {fmtTime(current.startedAt)}</div>
                 <span className="spacer" />
+                {!current.interactive && (
+                  <>
+                    <button className="ghost" onClick={() => runAgain(current)} title="Run the same command again on the same repos">↻ Run again</button>
+                    <button className="ghost" onClick={() => editSession(current)} title="Edit command / repos / collaborator and run">✎ Edit</button>
+                  </>
+                )}
                 {current.hidden
                   ? <button className="ghost" onClick={() => setHidden(current.id, false)} title="Unhide session">unhide</button>
                   : <button className="ghost" onClick={() => setHidden(current.id, true)} title="Hide session">hide</button>}

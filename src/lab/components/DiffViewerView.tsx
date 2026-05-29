@@ -11,6 +11,7 @@ import type { DiffEndpoint, FileImage, FileRef, Peer } from '../types';
 import { lineDiff } from '../diff';
 import { resolveContent } from '../content';
 import { dragProps, fileLink, diffLineLink } from '../dnd';
+import Avatar from './Avatar';
 
 function fileKey(f: FileImage) {
   return `${f.repoPath}::${f.path}`;
@@ -27,6 +28,7 @@ function EndpointPicker({
   return (
     <div className="endpoint-picker">
       <span className="ep-label">{label}</span>
+      <Avatar peer={peers.find((p) => p.id === endpoint.peerId)} size={18} />
       <select value={endpoint.peerId} onChange={(e) => onChange({ ...endpoint, peerId: e.target.value })}>
         {peers.map((p) => <option key={p.id} value={p.id}>{p.name}{p.isSelf ? ' (you)' : ''}</option>)}
       </select>
