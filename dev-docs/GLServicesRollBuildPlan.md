@@ -2,8 +2,10 @@
 
 Implementation plan for the services described in `dev-docs/GLServicesDesign.md`.
 
-This plan assumes `dev-docs/GLDeltaFileWindowProtocolPlan.md` is implemented far
-enough to provide the `filedelta` Python package and TypeScript reassembler.
+This plan assumes `dev-docs/GLDeltaFileWindowProtocolPlan.md` has reached the
+minimum service-integration checkpoint: the `filedelta` Python package,
+TypeScript reassembler, cross-language fixtures, JSON codec, and shared caps are
+implemented and passing their verification commands.
 
 This is a roll-build-compatible plan. Start only from a clean working tree,
 choose a phase-start tag, implement one phase at a time, and commit/tag only
@@ -11,8 +13,8 @@ when the phase goal is met and focused verification passes.
 
 ## Readiness
 
-The services design is ready for planning. The remaining open items are phase
-parameters, not blockers:
+The services design is ready to roll-build from a clean working tree. The
+remaining open item is a v1 scope decision, not a blocker:
 
 - whether `deps.subscribe` is needed in v1
 
@@ -200,8 +202,13 @@ Deliverables:
 
 Verification:
 
-- `uv run pytest services/griplab_service/tests/test_protocol*.py`
-- TypeScript protocol tests pass (exact command pinned when TS location is chosen)
+- Initial stdlib-compatible command:
+  `PYTHONPATH=services/griplab_service/src python3 -m unittest discover -s services/griplab_service/tests -p 'test_protocol*.py'`
+- If Phase 0 introduces pytest/uv service tooling, replace the stdlib command
+  with `uv run pytest services/griplab_service/tests/test_protocol*.py` in the
+  same phase.
+- TypeScript protocol tests pass. Pin the exact command when the TS protocol
+  location is chosen.
 - no absolute paths in committed examples/docs
 
 Exit criteria:
@@ -332,8 +339,10 @@ generalizes that seed into the full service client for workspace, tree,
 sessions, chat, reconnect, and shared subscription management. Do not create a
 separate competing client in Phase 5.
 
-File stream caps come from `dev-docs/GLDeltaFileWindowProtocolPlan.md`
-(`fullContentSizeCap`, `windowBytesCap`, delta/reset thresholds).
+File stream caps come from `filedelta.constants`:
+`FULL_CONTENT_SIZE_CAP`, `WINDOW_BYTES_CAP`, and `DELTA_BYTES_THRESHOLD`. These
+constants are the implementation source of truth for the cap values pinned in
+`dev-docs/GLDeltaFileWindowProtocolPlan.md`.
 
 Verification:
 
@@ -582,8 +591,11 @@ Minimum `filedelta` readiness before Phase 5:
 - TS reassembler
 - shared fixture tests for start/reset/grow/shrink/changed/inserted/removed/truncated
 
-Do not start service file-window integration until the cross-language fixture
-tests pass. Otherwise service bugs and protocol bugs will be hard to separate.
+Status: satisfied as of `delta-build/phase-8-filedelta-hardening`.
+
+Keep rerunning the `filedelta` Python tests and `services/filedelta-ts` tests
+when Phase 5 changes service file-stream behavior. Otherwise service bugs and
+protocol bugs will be hard to separate.
 
 ## Roll-Build Guardrails
 
@@ -611,7 +623,12 @@ Add service-specific commands as the Python package lands:
 - focused TypeScript tests for protocol/client modules
 - end-to-end local service smoke test
 
+Current delta dependency verification commands:
+
+- `PYTHONPATH=services/filedelta/src python3 -m unittest discover -s services/filedelta/tests`
+- `npm test --prefix services/filedelta-ts`
+
 ## Planning Status
 
-Ready for roll-build planning after the delta file window protocol plan enters
-implementation or reaches its minimum readiness checkpoint.
+Ready to roll-build. Start at Phase 0 from a clean working tree with a service
+phase-start tag, then commit and tag each verified phase before proceeding.
