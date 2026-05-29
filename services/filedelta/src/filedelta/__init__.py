@@ -1,5 +1,6 @@
 """Structured byte delta primitives for grip-lab file windows."""
 
+from .connection import FileConnection
 from .errors import DeltaApplyError, DeltaValidationError, FiledeltaError
 from .hash import hash_bytes
 from .line_index import LineIndex, WindowProjection, build_line_index, project_window
@@ -24,8 +25,10 @@ from .snapshot import (
     make_reset,
     make_text_window_snapshot,
 )
+from .subscriber import FileSubscriber
 from .window import (
     DEFAULT_DELTA_BYTES_THRESHOLD,
+    FileWindowSubscription,
     apply_text_window_delta,
     classify_window_change,
     diff_text_window_snapshots,
@@ -37,8 +40,11 @@ __all__ = [
     "CodecDescriptor",
     "DeltaApplyError",
     "DeltaValidationError",
+    "FileConnection",
     "FileMetadata",
     "FileSource",
+    "FileSubscriber",
+    "FileWindowSubscription",
     "FiledeltaError",
     "FullDelta",
     "FullSnapshot",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from .errors import DeltaApplyError
 from .hash import hash_bytes
 from .model import (
@@ -14,8 +16,18 @@ from .model import (
 )
 from .ops import apply_ops, diff_bytes
 from .snapshot import make_reset, make_text_window_snapshot
+from .subscriber import FileSubscriber
 
 DEFAULT_DELTA_BYTES_THRESHOLD = 64 * 1024
+
+
+class _WindowConnection(Protocol):
+    resource_id: str
+    file_version: str
+
+    async def read_bytes(self) -> bytes: ...
+
+    def remove_subscription(self, subscription: "FileWindowSubscription") -> None: ...
 
 
 def classify_window_change(old: LineWindow, new: LineWindow) -> str:
@@ -166,3 +178,98 @@ def apply_text_window_delta(
     )
     snapshot.validate()
     return snapshot
+
+
+class FileWindowSubscription:
+    """Async lifecycle for one projected window subscriber."""
+
+    def __init__(
+        self,
+        connection: _WindowConnection,
+        subscriber: FileSubscriber,
+        window: LineWindow,
+    ) -> None:
+        self.connection = connection
+        self.subscriber = subscriber
+        self.requested_window = window
+        self.window_version_index = 1
+        self.seq = 0
+        self.snapshot: TextWindowSnapshot | None = None
+        self.closed = False
+
+    async def open(self) -> None:
+        data = await self.connection.read_bytes()
+        self.snapshot = make_text_window_snapshot(
+            self.connection.resource_id,
+            self._window_id(),
+            data,
+            self.requested_window,
+            file_version=self.connection.file_version,
+            window_version=self._format_window_version(),
+        )
+        await self.subscriber.on_listening(self.connection.resource_id)
+        await self.subscriber.on_snapshot(self.snapshot)
+
+    async def update_window(self, window: LineWindow) -> None:
+        if self.closed:
+            return
+        await self._emit_update(await self.connection.read_bytes(), window)
+
+    async def file_changed(self, reason: str = "file-change") -> None:
+        if self.closed:
+            return
+        await self._emit_update(await self.connection.read_bytes(), self.requested_window, reason)
+
+    async def deleted(self) -> None:
+        if self.closed:
+            return
+        await self.subscriber.on_error("deleted", "file was deleted")
+        await self.close("deleted")
+
+    async def close(self, reason: str = "closed") -> None:
+        if self.closed:
+            return
+        self.closed = True
+        self.connection.remove_subscription(self)
+        await self.subscriber.on_stop_listening(self.connection.resource_id, reason)
+
+    async def _emit_update(
+        self,
+        data: bytes,
+        window: LineWindow,
+        reason: str | None = None,
+    ) -> None:
+        if self.snapshot is None:
+            raise RuntimeError("subscription is not open")
+        self.seq += 1
+        self.window_version_index += 1
+        event = make_text_window_update(
+            self.snapshot,
+            data,
+            window,
+            seq=self.seq,
+            result_file_version=self.connection.file_version,
+            result_window_version=self._format_window_version(),
+            reason=reason,
+        )
+        self.requested_window = window
+        if isinstance(event, ResetEvent):
+            self.snapshot = event.snapshot
+            try:
+                await self.subscriber.on_reset(event)
+            except Exception:
+                await self.close("consumer-error")
+                raise
+        else:
+            self.snapshot = apply_text_window_delta(self.snapshot, event)
+            try:
+                await self.subscriber.on_delta(event)
+            except Exception:
+                await self.close("consumer-error")
+                raise
+
+    def _format_window_version(self) -> str:
+        return f"wv{self.window_version_index:06d}"
+
+    def _window_id(self) -> str:
+        return f"{self.connection.resource_id}:window"
