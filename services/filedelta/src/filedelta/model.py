@@ -166,6 +166,72 @@ class FullDelta:
 
 
 @dataclass(frozen=True)
+class TextWindowDelta:
+    """Structured byte-op delta for one projected text window."""
+
+    resource_id: str
+    window_id: str
+    seq: int
+    reason: str
+    base_file_version: str
+    result_file_version: str
+    base_window_version: str
+    result_window_version: str
+    base_hash: str
+    result_hash: str
+    line_start: int
+    line_end: int
+    total_lines: int
+    start_byte: int
+    end_byte: int
+    line_index: list[int]
+    truncated: bool
+    result_size: int
+    codec: CodecDescriptor
+    ops: list["ByteOp"]
+    metadata: FileMetadata = field(default_factory=FileMetadata)
+    scope: str = "text-window"
+    kind: str = "content"
+
+    def validate(self) -> None:
+        if self.scope != "text-window":
+            raise DeltaValidationError("text window delta scope must be text-window")
+        if not self.resource_id:
+            raise DeltaValidationError("resource_id must not be empty")
+        if not self.window_id:
+            raise DeltaValidationError("window_id must not be empty")
+        if self.seq < 0:
+            raise DeltaValidationError("seq must be non-negative")
+        if not self.reason:
+            raise DeltaValidationError("reason must not be empty")
+        if not self.base_file_version or not self.result_file_version:
+            raise DeltaValidationError("file versions must not be empty")
+        if not self.base_window_version or not self.result_window_version:
+            raise DeltaValidationError("window versions must not be empty")
+        LineWindow(self.line_start, self.line_end).validate()
+        if self.total_lines < 0:
+            raise DeltaValidationError("total_lines must be non-negative")
+        if self.start_byte < 0 or self.end_byte < self.start_byte:
+            raise DeltaValidationError("invalid byte range")
+        if self.result_size < 0:
+            raise DeltaValidationError("result_size must be non-negative")
+        if self.line_index and self.line_index[0] != 0:
+            raise DeltaValidationError("line_index must be relative to window bytes")
+        previous = -1
+        for offset in self.line_index:
+            if offset < 0:
+                raise DeltaValidationError("line_index offsets must be non-negative")
+            if offset <= previous:
+                raise DeltaValidationError("line_index offsets must be increasing")
+            if offset >= self.result_size and self.result_size:
+                raise DeltaValidationError("line_index offset is beyond window bytes")
+            previous = offset
+        self.codec.validate()
+        for op in self.ops:
+            op.validate_structure()
+
+
+@dataclass(frozen=True)
 class ResetEvent:
     """Reset event that replaces the receiver state with a snapshot."""
 
