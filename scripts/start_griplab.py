@@ -51,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         workspace_root=workspace_root,
     )
     sync_collaborators(config_root, [client_config, hub_config])
+    if args.with_hub:
+        sync_local_hub_registration(client_config, hub_port=args.hub_port)
 
     ui_service_port = args.hub_port if args.with_hub else args.client_port
     hub_route = args.with_hub
@@ -168,6 +170,20 @@ def sync_collaborators(config_root: Path, config_paths: list[Path]) -> None:
             raise ValueError(f"{config_path} must contain a JSON object")
         config["peers"] = sorted([dict(item) for item in collaborators], key=lambda item: str(item.get("peerId", "")))
         write_json_private(config_path, config)
+
+
+def sync_local_hub_registration(client_config: Path, *, hub_port: int) -> None:
+    if not client_config.exists():
+        return
+    with client_config.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+    if not isinstance(config, dict):
+        raise ValueError(f"{client_config} must contain a JSON object")
+    hub = dict(config.get("hub", {})) if isinstance(config.get("hub", {}), dict) else {}
+    hub["url"] = f"ws://127.0.0.1:{hub_port}/ws"
+    hub.setdefault("heartbeatIntervalMs", 1000)
+    config["hub"] = hub
+    write_json_private(client_config, config)
 
 
 def write_json_private(path: Path, value: dict[str, Any]) -> None:
