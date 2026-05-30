@@ -484,7 +484,7 @@ def remote_start_command(
     return " && ".join([
         f"mkdir -p {shlex.quote(log_root)}",
         f"cd {shlex.quote(location)}",
-        f"exec {remote_command} > {shlex.quote(log_stdout)} 2> {shlex.quote(log_stderr)}",
+        f"{remote_command} > {shlex.quote(log_stdout)} 2> {shlex.quote(log_stderr)}",
     ])
 
 

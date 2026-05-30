@@ -122,6 +122,21 @@ def test_start_command_wraps_dual_forwards_and_logs() -> None:
     assert "127.0.0.1:42001:127.0.0.1:3141" in command
     assert "fixture.out" in command[-1]
     assert "fixture.err" in command[-1]
+    assert "exec cd" not in command[-1]
+
+
+def test_remote_start_command_handles_compound_commands() -> None:
+    command = remote_start_command(
+        "workspace",
+        "cd workspace/.griplab/client_payload && uv run griplab client --config workspace/.griplab/client.json",
+        "workspace/.griplab/logs",
+        "workspace/.griplab/logs/client.out",
+        "workspace/.griplab/logs/client.err",
+    )
+
+    assert "exec cd" not in command
+    assert "cd workspace/.griplab/client_payload && uv run" in command
+    assert "> workspace/.griplab/logs/client.out" in command
 
 
 def test_peer_probe_over_fixture_sshd(tmp_path) -> None:
