@@ -1,5 +1,13 @@
 """Structured diff stream protocol primitives."""
 
+from .algorithm import (
+    build_diff_payload,
+    build_hunks,
+    effective_window,
+    unified_diff_text,
+    validate_same_path,
+    validate_window_bounds,
+)
 from .codec import (
     diagnostic_from_json,
     diagnostic_to_json,
@@ -50,10 +58,13 @@ __all__ = [
     "DiffStreamError",
     "DiffStreamValidationError",
     "DiffWindow",
+    "build_diff_payload",
+    "build_hunks",
     "diagnostic_from_json",
     "diagnostic_to_json",
     "endpoint_from_json",
     "endpoint_to_json",
+    "effective_window",
     "format_diff_id",
     "format_diff_version",
     "format_hunk_id",
@@ -67,6 +78,9 @@ __all__ = [
     "ref_to_json",
     "source_state_from_json",
     "source_state_to_json",
+    "unified_diff_text",
+    "validate_same_path",
+    "validate_window_bounds",
     "window_from_json",
     "window_to_json",
 ]
