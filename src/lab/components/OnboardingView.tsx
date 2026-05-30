@@ -5,6 +5,8 @@ import {
 } from '../grips';
 import type { CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
 import { STOCK_AVATARS, LETTER_COLORS } from '../avatars';
+import { LAB_SERVICE_MODE } from '../dataMode';
+import { probeServicePeer } from '../serviceClient/probe';
 import Avatar from './Avatar';
 
 const DEFAULT_PORT = 3141; // signature port (π) — uncommon, memorable
@@ -44,6 +46,18 @@ export default function OnboardingView() {
   // Connect/probe the connection string (synchronous in the mock).
   const connect = (address: string) => {
     if (!address.trim()) { setForm({ conn: { status: 'idle' } }); return; }
+    if (LAB_SERVICE_MODE) {
+      setForm({ conn: { status: 'connecting' } });
+      void probeServicePeer({ sshAddress: address, location: form.location || '.' })
+        .then((r) => {
+          if (r.ok) setForm({ conn: { status: 'connected', os: r.os, shells: r.shells } });
+          else setForm({ conn: { status: 'error', error: r.error ?? 'probe failed' } });
+        })
+        .catch((error: unknown) => {
+          setForm({ conn: { status: 'error', error: error instanceof Error ? error.message : String(error) } });
+        });
+      return;
+    }
     const r = probe(address);
     setForm({ conn: { status: 'connected', os: r.os, shells: r.shells } });
   };
@@ -70,6 +84,18 @@ export default function OnboardingView() {
   const check = (id: string) => {
     const target = peers.find((p) => p.id === id);
     if (!target) return;
+    if (LAB_SERVICE_MODE) {
+      void probeServicePeer({ sshAddress: target.sshAddress, location: target.location })
+        .then((r) => {
+          peersTap?.set(peers.map((p) => (p.id === id
+            ? { ...p, os: r.ok ? r.os : p.os, shells: r.ok ? r.shells : p.shells, online: r.ok }
+            : p)));
+        })
+        .catch(() => {
+          peersTap?.set(peers.map((p) => (p.id === id ? { ...p, online: false } : p)));
+        });
+      return;
+    }
     const r = probe(target.sshAddress);
     peersTap?.set(peers.map((p) => (p.id === id ? { ...p, os: r.os, shells: r.shells, online: r.online } : p)));
   };
@@ -201,9 +227,11 @@ export default function OnboardingView() {
         </div>
 
         <div className="conn-status">
-          {form.conn.status !== 'connected' && (
+          {form.conn.status === 'idle' && (
             <span className="muted">Enter a connection string to check the peer.</span>
           )}
+          {form.conn.status === 'connecting' && <span className="muted">checking peer…</span>}
+          {form.conn.status === 'error' && <><span className="dot off" />{form.conn.error ?? 'probe failed'}</>}
           {form.conn.status === 'connected' && form.conn.os && (
             <>
               <span className="dot on" />connected — <strong>{OS_LABEL[form.conn.os]}</strong>

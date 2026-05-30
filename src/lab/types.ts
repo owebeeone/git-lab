@@ -47,9 +47,10 @@ export interface ProbeResult {
 
 // Connection-probe state shown while adding a collaborator.
 export interface ConnState {
-  status: 'idle' | 'connecting' | 'connected';
+  status: 'idle' | 'connecting' | 'connected' | 'error';
   os?: OsKind;
   shells?: ShellKind[];
+  error?: string;
 }
 
 // Add-collaborator form state (held in a grip, not React state).
