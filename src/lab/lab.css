@@ -493,7 +493,11 @@ button { color: inherit; }
 .segmented button + button { border-left: 1px solid var(--border); }
 .segmented button.active { background: var(--accent-soft); color: var(--accent); }
 
-.service-chip { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 0.78rem; }
+.service-menu { margin-left: auto; position: relative; }
+.service-menu summary { list-style: none; cursor: pointer; }
+.service-menu summary::-webkit-details-marker { display: none; }
+.service-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 0.78rem; }
+.service-menu-panel { top: 30px; min-width: 160px; }
 .service-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .service-chip.connected .service-dot { background: var(--ok); }
 .service-chip.connecting .service-dot, .service-chip.reconnecting .service-dot { background: var(--warn); }

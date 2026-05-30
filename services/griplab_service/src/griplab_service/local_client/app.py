@@ -47,6 +47,7 @@ from griplab_service.protocol import (
     envelope_from_json,
     envelope_to_json,
 )
+from griplab_service.restart import schedule_process_restart
 from griplab_service.ssh_bootstrap import EphemeralBootstrapManager, probe_peer
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
@@ -221,6 +222,14 @@ async def handle_protocol_message(
             method=envelope.method,
             payload=deps_payload(connection.config),
         ))
+        return
+    if envelope.method == "admin.restart":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"restarting": True, "target": "client"},
+        ))
+        schedule_process_restart()
         return
     if envelope.method == "workspace.status.subscribe":
         if not envelope.stream_id:

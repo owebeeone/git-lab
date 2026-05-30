@@ -54,6 +54,7 @@ from griplab_service.protocol import (
     envelope_from_json,
     envelope_to_json,
 )
+from griplab_service.restart import schedule_process_restart
 from griplab_service.ssh_bootstrap import HubBootstrapWorker
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
@@ -285,6 +286,14 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
             method=envelope.method,
             payload={"removed": removed},
         ))
+        return
+    if envelope.method == "admin.restart":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"restarting": True, "target": "hub"},
+        ))
+        schedule_process_restart()
         return
     if envelope.method == "chat.subscribe":
         if not envelope.stream_id:

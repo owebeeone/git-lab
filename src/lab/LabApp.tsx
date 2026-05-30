@@ -11,6 +11,7 @@ import SessionsView from './components/SessionsView';
 import SettingsView from './components/SettingsView';
 import ChatPanel from './components/ChatPanel';
 import { Icon } from './components/icons';
+import { restartHub, restartLocalClient } from './serviceClient/admin';
 import './lab.css';
 
 // Chat is a persistent right-hand panel (see ChatPanel), not a nav view.
@@ -47,10 +48,16 @@ export default function LabApp() {
           ))}
         </nav>
         {LAB_SERVICE_MODE && (
-          <div className={`service-chip ${service?.status ?? 'disconnected'}`} title={service?.error ?? service?.url ?? ''}>
-            <span className="service-dot" />
-            <span>{service?.status ?? 'disconnected'}</span>
-          </div>
+          <details className="service-menu">
+            <summary className={`service-chip ${service?.status ?? 'disconnected'}`} title={service?.error ?? service?.url ?? ''}>
+              <span className="service-dot" />
+              <span>{service?.status ?? 'disconnected'}</span>
+            </summary>
+            <div className="menu service-menu-panel">
+              <button onClick={() => { void restartHub(); }}>Restart hub</button>
+              <button onClick={() => { void restartLocalClient(); }}>Restart client</button>
+            </div>
+          </details>
         )}
       </header>
       <div className="lab-body">
