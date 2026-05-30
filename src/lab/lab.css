@@ -489,3 +489,9 @@ button { color: inherit; }
 .segmented button { background: var(--card); border: none; color: var(--text); padding: 6px 16px; cursor: pointer; }
 .segmented button + button { border-left: 1px solid var(--border); }
 .segmented button.active { background: var(--accent-soft); color: var(--accent); }
+
+.service-chip { margin-left: auto; display: inline-flex; align-items: center; gap: 7px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 0.78rem; }
+.service-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.service-chip.connected .service-dot { background: var(--ok); }
+.service-chip.connecting .service-dot, .service-chip.reconnecting .service-dot { background: var(--warn); }
+.service-chip.error .service-dot { background: var(--err); }

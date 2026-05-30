@@ -1,5 +1,7 @@
 import { useGrip } from '@owebeeone/grip-react';
 import { CURRENT_VIEW, CURRENT_VIEW_TAP, THEME } from './grips';
+import { SERVICE_CONNECTION } from './grips.service';
+import { LAB_SERVICE_MODE } from './dataMode';
 import type { ViewId } from './types';
 import OnboardingView from './components/OnboardingView';
 import WorkspaceStatusView from './components/WorkspaceStatusView';
@@ -25,6 +27,7 @@ export default function LabApp() {
   const view = useGrip(CURRENT_VIEW);
   const viewTap = useGrip(CURRENT_VIEW_TAP);
   const theme = useGrip(THEME) ?? 'dark';
+  const service = useGrip(SERVICE_CONNECTION);
 
   return (
     <div className="lab-root" data-theme={theme}>
@@ -43,6 +46,12 @@ export default function LabApp() {
             </button>
           ))}
         </nav>
+        {LAB_SERVICE_MODE && (
+          <div className={`service-chip ${service?.status ?? 'disconnected'}`} title={service?.error ?? service?.url ?? ''}>
+            <span className="service-dot" />
+            <span>{service?.status ?? 'disconnected'}</span>
+          </div>
+        )}
       </header>
       <div className="lab-body">
         <main className="lab-main">
