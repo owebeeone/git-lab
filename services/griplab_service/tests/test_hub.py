@@ -184,6 +184,9 @@ def test_hub_assigns_distinct_remote_hub_ports_per_collaborator(tmp_path: Path) 
     assert registry._remote_hub_port_for("weftpi") == 43140
     assert registry._remote_hub_port_for("weftpi-another") == 43141
     assert registry._remote_hub_port_for("weftpi") == 43140
+    assert registry._remote_client_port_for("weftpi") == 3141
+    assert registry._remote_client_port_for("weftpi-another") == 3142
+    assert registry._remote_client_port_for("weftpi") == 3141
 
 
 def test_hub_chat_post_subscribe_and_persist_order(tmp_path: Path) -> None:

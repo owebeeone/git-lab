@@ -558,7 +558,9 @@ class PeerRegistry:
         self.bootstrap_tasks: dict[str, asyncio.Task[None]] = {}
         self.bootstrap_states: dict[str, dict[str, object]] = {}
         self.remote_hub_ports: dict[str, int] = {}
+        self.remote_client_ports: dict[str, int] = {}
         self._next_remote_hub_port = 43140
+        self._next_remote_client_port = 3141
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer = connected_presence(payload)
@@ -630,6 +632,7 @@ class PeerRegistry:
         assert self.bootstrap_worker is not None
         payload = collaborator.to_json()
         payload["remoteHubPort"] = self._remote_hub_port_for(collaborator.peer_id)
+        payload["remoteClientPort"] = self._remote_client_port_for(collaborator.peer_id)
         try:
             result = await asyncio.to_thread(self.bootstrap_worker.bootstrap, payload)
         except Exception as exc:
@@ -769,13 +772,25 @@ class PeerRegistry:
         current = self.remote_hub_ports.get(peer_id)
         if current is not None:
             return current
-        used = set(self.remote_hub_ports.values())
-        while self._next_remote_hub_port in used:
-            self._next_remote_hub_port += 1
-        port = self._next_remote_hub_port
+        port = self._next_available_remote_port(self.remote_hub_ports, "_next_remote_hub_port")
         self.remote_hub_ports[peer_id] = port
-        self._next_remote_hub_port += 1
         return port
+
+    def _remote_client_port_for(self, peer_id: str) -> int:
+        current = self.remote_client_ports.get(peer_id)
+        if current is not None:
+            return current
+        port = self._next_available_remote_port(self.remote_client_ports, "_next_remote_client_port")
+        self.remote_client_ports[peer_id] = port
+        return port
+
+    def _next_available_remote_port(self, assigned: dict[str, int], attr: str) -> int:
+        current = int(getattr(self, attr))
+        used = set(assigned.values())
+        while current in used:
+            current += 1
+        setattr(self, attr, current + 1)
+        return current
 
     def _bootstrap_health(self, peer_id: str, peer: dict[str, object]) -> dict[str, object]:
         state = self.bootstrap_states[peer_id]
