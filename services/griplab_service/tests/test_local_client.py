@@ -152,9 +152,21 @@ def test_local_client_peer_presence_uses_config_peers(tmp_path: Path) -> None:
                     peers = snapshot["payload"]["payload"]["peers"]
                     assert peers[0]["id"] == "me"
                     assert peers[0]["isSelf"] is True
+                    assert peers[0]["status"] == "online"
                     assert peers[1]["id"] == "weftpi"
+                    assert peers[1]["status"] == "configured"
                     assert peers[1]["sshAddress"] == "gianni@10.1.1.236"
                     assert peers[1]["location"] == "~/gitlab/grip-dev"
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "peer.health.get",
+                        "payload": {"peerId": "weftpi"},
+                    })
+                    health = await ws.receive_json(timeout=2)
+                    assert health["payload"]["health"]["peerId"] == "weftpi"
+                    assert health["payload"]["health"]["status"] == "configured"
         finally:
             server.stop()
 

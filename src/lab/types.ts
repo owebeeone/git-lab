@@ -13,6 +13,8 @@ export type OsKind = 'macos' | 'linux' | 'windows';
 
 export type ShellKind = 'bash' | 'zsh' | 'powershell';
 
+export type PeerPresenceStatus = 'configured' | 'offline' | 'bootstrapping' | 'starting' | 'online' | 'error';
+
 // A stock avatar image (emoji on a colored circle — no binary assets).
 export interface StockAvatar { id: string; emoji: string; bg: string }
 // A peer's chosen avatar: a stock image or a Google-style colored letter.
@@ -36,6 +38,9 @@ export interface Peer {
   shells: ShellKind[];
   online: boolean;
   isSelf: boolean;
+  status?: PeerPresenceStatus;
+  summary?: string;
+  lastSeenAt?: number | null;
 }
 
 // Result of probing a peer over its connection.

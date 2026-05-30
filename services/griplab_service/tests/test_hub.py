@@ -42,7 +42,9 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
                         "payload": {},
                     })
                     initial = await watcher.receive_json(timeout=2)
-                    assert initial["payload"]["payload"] == {"peers": []}
+                    peers = initial["payload"]["payload"]["peers"]
+                    assert [peer["id"] for peer in peers] == ["hub"]
+                    assert peers[0]["status"] == "online"
 
                     client = await session.ws_connect(server.ws_url)
                     await client.send_json({
@@ -64,14 +66,100 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
 
                     online = await watcher.receive_json(timeout=2)
                     peers = online["payload"]["payload"]["peers"]
-                    assert peers[0]["id"] == "alice"
-                    assert peers[0]["online"] is True
+                    alice = next(peer for peer in peers if peer["id"] == "alice")
+                    assert alice["online"] is True
+                    assert alice["status"] == "online"
 
                     await client.close(code=WSCloseCode.GOING_AWAY)
                     offline = await watcher.receive_json(timeout=2)
                     peers = offline["payload"]["payload"]["peers"]
-                    assert peers[0]["id"] == "alice"
-                    assert peers[0]["online"] is False
+                    alice = next(peer for peer in peers if peer["id"] == "alice")
+                    assert alice["online"] is False
+                    assert alice["status"] == "offline"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_presence_loads_configured_collaborators(tmp_path: Path) -> None:
+    async def run() -> None:
+        config_path = write_hub_config(tmp_path)
+        (tmp_path / "collaborators.json").write_text(json.dumps([
+            {
+                "peerId": "weftpi",
+                "name": "Weftpi",
+                "sshAddress": "gianni@example.invalid",
+                "location": "~/gitlab/grip-dev",
+            }
+        ]), encoding="utf-8")
+        config = load_config(config_path)
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "peer.presence.subscribe",
+                        "streamId": "presence0001",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    peers = snapshot["payload"]["payload"]["peers"]
+                    assert [peer["id"] for peer in peers] == ["hub", "weftpi"]
+                    configured = peers[1]
+                    assert configured["status"] == "configured"
+                    assert configured["online"] is False
+                    assert configured["sshAddress"] == "gianni@example.invalid"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_peer_health_and_collaborator_mutation(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "peer.collaborator.upsert",
+                        "payload": {
+                            "peerId": "alice",
+                            "name": "Alice",
+                            "sshAddress": "alice@example.invalid",
+                            "location": "~/work/project",
+                        },
+                    })
+                    upserted = await ws.receive_json(timeout=2)
+                    assert upserted["kind"] == "response"
+                    assert upserted["payload"]["collaborator"]["peerId"] == "alice"
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "peer.health.get",
+                        "payload": {"peerId": "alice"},
+                    })
+                    health = await ws.receive_json(timeout=2)
+                    assert health["payload"]["health"]["peerId"] == "alice"
+                    assert health["payload"]["health"]["status"] == "configured"
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "peer.collaborator.remove",
+                        "payload": {"peerId": "alice"},
+                    })
+                    removed = await ws.receive_json(timeout=2)
+                    assert removed["payload"] == {"removed": True}
         finally:
             server.stop()
 

@@ -33,6 +33,18 @@ from filedelta import (
 )
 
 from griplab_service.chat_store import ChatStore, chat_store_root
+from griplab_service.collaborators import (
+    CollaboratorRecord,
+    collaborators_path,
+    configured_presence,
+    connected_presence,
+    health_for_presence,
+    load_collaborators,
+    mark_presence_offline,
+    remove_collaborator,
+    self_presence,
+    upsert_collaborator,
+)
 from griplab_service.config import ServiceConfig
 from griplab_service.protocol import (
     ErrorInfo,
@@ -130,7 +142,7 @@ class HubServer:
 def create_app(config: ServiceConfig) -> web.Application:
     app = web.Application()
     app[CONFIG_KEY] = config
-    app[REGISTRY_KEY] = PeerRegistry()
+    app[REGISTRY_KEY] = PeerRegistry(config)
     app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
     app.router.add_get("/health", handle_health)
     app.router.add_get("/ws", handle_ws)
@@ -195,6 +207,61 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
             ))
             return
         await connection.subscribe_presence(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "peer.health.get":
+        try:
+            payload = connection.registry.peer_health(envelope.payload)
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-request", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=payload,
+        ))
+        return
+    if envelope.method == "peer.collaborator.list":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"collaborators": connection.registry.collaborators_json()},
+        ))
+        return
+    if envelope.method == "peer.collaborator.upsert":
+        try:
+            collaborator = connection.registry.upsert_collaborator(envelope.payload)
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-collaborator", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"collaborator": collaborator},
+        ))
+        return
+    if envelope.method == "peer.collaborator.remove":
+        peer_id = str(envelope.payload.get("peerId", ""))
+        if not peer_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-collaborator", "peer.collaborator.remove requires peerId"),
+            ))
+            return
+        removed = connection.registry.remove_collaborator(peer_id)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"removed": removed},
+        ))
         return
     if envelope.method == "chat.subscribe":
         if not envelope.stream_id:
@@ -438,8 +505,12 @@ class HubConnection:
 class PeerRegistry:
     route_request_timeout_seconds = 5.0
 
-    def __init__(self) -> None:
+    def __init__(self, config: ServiceConfig) -> None:
+        self.config = config
+        self.collaborators_path = collaborators_path(config)
+        self.collaborators: dict[str, CollaboratorRecord] = self._load_collaborators()
         self.peers: dict[str, dict[str, object]] = {}
+        self.self_peer = self_presence(config)
         self.connections: dict[str, HubConnection] = {}
         self.presence_subscribers: set[asyncio.Queue[None]] = set()
         self._relay_index = 0
@@ -449,20 +520,9 @@ class PeerRegistry:
         self.diff_sources_by_target_stream: dict[str, tuple[HubDiffStream, str]] = {}
 
     def hello(self, payload: dict[str, Any]) -> str:
-        peer_id = str(payload.get("peerId", ""))
-        if not peer_id:
-            raise ValueError("peer.hello requires peerId")
-        self.peers[peer_id] = {
-            "id": peer_id,
-            "name": str(payload.get("name", peer_id)),
-            "sshAddress": str(payload.get("sshAddress", "")),
-            "location": str(payload.get("location", "")),
-            "os": payload.get("os"),
-            "shells": list(payload.get("shells", [])),
-            "online": True,
-            "isSelf": bool(payload.get("isSelf", False)),
-            "lastSeen": int(time.time() * 1000),
-        }
+        peer = connected_presence(payload)
+        peer_id = str(peer["id"])
+        self.peers[peer_id] = peer
         return peer_id
 
     def register_connection(self, peer_id: str, connection: HubConnection) -> None:
@@ -479,12 +539,64 @@ class PeerRegistry:
         peer = self.peers.get(peer_id)
         if peer is None:
             return
-        peer["online"] = False
-        peer["lastSeen"] = int(time.time() * 1000)
+        mark_presence_offline(peer)
         self.publish()
 
     def peers_json(self) -> list[dict[str, object]]:
-        return sorted(self.peers.values(), key=lambda item: str(item["id"]))
+        merged = {self.config.self_peer_id: dict(self.self_peer)}
+        for collaborator in self.collaborators.values():
+            merged[collaborator.peer_id] = configured_presence(collaborator)
+        for peer_id, peer in self.peers.items():
+            merged[peer_id] = dict(peer)
+        return sorted(merged.values(), key=lambda item: str(item["id"]))
+
+    def collaborators_json(self) -> list[dict[str, object]]:
+        return [item.to_json() for item in sorted(self.collaborators.values(), key=lambda item: item.peer_id)]
+
+    def peer_health(self, payload: dict[str, Any]) -> dict[str, object]:
+        peer_id = str(payload.get("peerId", ""))
+        if not peer_id:
+            raise ValueError("peer.health.get requires peerId")
+        for peer in self.peers_json():
+            if str(peer.get("id", "")) == peer_id:
+                return {"health": health_for_presence(peer)}
+        return {
+            "health": {
+                "peerId": peer_id,
+                "status": "error",
+                "summary": "Peer is not registered",
+                "checks": [{"id": "config", "status": "error", "summary": "Peer record was not found"}],
+                "updatedAt": int(time.time() * 1000),
+            }
+        }
+
+    def upsert_collaborator(self, payload: dict[str, Any]) -> dict[str, object]:
+        collaborator = CollaboratorRecord.from_json(payload)
+        self.collaborators = {
+            item.peer_id: item
+            for item in upsert_collaborator(self.collaborators_path, collaborator)
+        }
+        self.publish()
+        return collaborator.to_json()
+
+    def remove_collaborator(self, peer_id: str) -> bool:
+        existed = peer_id in self.collaborators
+        self.collaborators = {
+            item.peer_id: item
+            for item in remove_collaborator(self.collaborators_path, peer_id)
+        }
+        self.publish()
+        return existed
+
+    def _load_collaborators(self) -> dict[str, CollaboratorRecord]:
+        records = {item.peer_id: item for item in load_collaborators(self.collaborators_path)}
+        for value in self.config.peers:
+            try:
+                record = CollaboratorRecord.from_json(dict(value))
+            except ValueError:
+                continue
+            records.setdefault(record.peer_id, record)
+        return records
 
     def add_presence_subscriber(self) -> asyncio.Queue[None]:
         queue: asyncio.Queue[None] = asyncio.Queue()

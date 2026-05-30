@@ -33,6 +33,7 @@ from filedelta import (
     text_window_snapshot_to_json,
 )
 from griplab_service.chat_store import ChatStore, chat_store_root
+from griplab_service.collaborators import health_for_presence
 from griplab_service.config import ServiceConfig
 from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
 from griplab_service.local_client.tree import TreeWatcher, tree_snapshot_payload
@@ -258,6 +259,22 @@ async def handle_protocol_message(
             ))
             return
         await connection.subscribe_peers(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "peer.health.get":
+        try:
+            payload = peer_health_payload(connection.config, envelope.payload)
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-request", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=payload,
+        ))
         return
     if envelope.method == "chat.post":
         try:
@@ -923,6 +940,24 @@ def config_peers_payload(config: ServiceConfig) -> list[dict[str, object]]:
     return peers
 
 
+def peer_health_payload(config: ServiceConfig, payload: dict[str, Any]) -> dict[str, object]:
+    peer_id = str(payload.get("peerId", ""))
+    if not peer_id:
+        raise ValueError("peer.health.get requires peerId")
+    for peer in config_peers_payload(config):
+        if str(peer.get("id", "")) == peer_id:
+            return {"health": health_for_presence(peer)}
+    return {
+        "health": {
+            "peerId": peer_id,
+            "status": "error",
+            "summary": "Peer is not registered",
+            "checks": [{"id": "config", "status": "error", "summary": "Peer record was not found"}],
+            "updatedAt": int(time.time() * 1000),
+        }
+    }
+
+
 def self_peer_payload(config: ServiceConfig) -> dict[str, object]:
     probe = build_probe(config)
     capabilities = dict(probe.get("capabilities", {}))
@@ -937,12 +972,16 @@ def self_peer_payload(config: ServiceConfig) -> dict[str, object]:
         "shells": [Path(str(shell)).name for shell in shells] if isinstance(shells, list) else [],
         "online": True,
         "isSelf": True,
+        "status": "online",
+        "summary": "Local service is running",
+        "lastSeenAt": int(time.time() * 1000),
     }
 
 
 def peer_config_to_json(value: dict[str, Any]) -> dict[str, object]:
     probe = value.get("probe") if isinstance(value.get("probe"), dict) else {}
     shells = probe.get("shells", []) if isinstance(probe, dict) else []
+    online = bool(probe.get("ok", False)) if isinstance(probe, dict) else False
     return {
         "id": str(value.get("peerId", value.get("id", ""))),
         "name": str(value.get("name", value.get("peerId", ""))),
@@ -950,8 +989,11 @@ def peer_config_to_json(value: dict[str, Any]) -> dict[str, object]:
         "location": str(value.get("location", "")),
         "os": normalize_peer_os(str(probe.get("os", ""))) if isinstance(probe, dict) and probe.get("os") else None,
         "shells": [str(shell) for shell in shells] if isinstance(shells, list) else [],
-        "online": bool(probe.get("ok", False)) if isinstance(probe, dict) else False,
+        "online": online,
         "isSelf": False,
+        "status": "online" if online else "configured",
+        "summary": "Connected" if online else "Configured; not connected",
+        "lastSeenAt": None,
     }
 
 

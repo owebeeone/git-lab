@@ -14,6 +14,8 @@ import {
 import {
   ServiceProtocolError,
   encodeServiceEnvelope,
+  parsePeerHealth,
+  parsePeerPresencePayload,
   parseServiceEnvelope,
   parseServiceStreamEvent,
 } from '../src/lab/serviceClient/protocol.ts';
@@ -171,6 +173,38 @@ transport.push({
 const presenceStreamEvent = await nextPresenceEvent;
 assert.deepEqual(presenceStreamEvent.value.payload, {
   peers: [{ id: 'alice', name: 'Alice', online: true }],
+});
+assert.deepEqual(parsePeerPresencePayload(presenceStreamEvent.value.payload), {
+  peers: [{
+    id: 'alice',
+    name: 'Alice',
+    sshAddress: '',
+    location: '',
+    os: null,
+    shells: [],
+    online: true,
+    isSelf: false,
+    status: 'online',
+    summary: '',
+    lastSeenAt: null,
+  }],
+});
+assert.throws(
+  () => parsePeerPresencePayload({ peers: [{ id: 'bad', status: 'maybe' }] }),
+  /presence status/,
+);
+assert.deepEqual(parsePeerHealth({
+  peerId: 'alice',
+  status: 'configured',
+  summary: 'Configured; not connected',
+  checks: [{ id: 'bootstrap', status: 'pending', summary: 'Bootstrap has not run yet' }],
+  updatedAt: 1,
+}), {
+  peerId: 'alice',
+  status: 'configured',
+  summary: 'Configured; not connected',
+  checks: [{ id: 'bootstrap', status: 'pending', summary: 'Bootstrap has not run yet' }],
+  updatedAt: 1,
 });
 
 const chatIterator = client.subscribe('chat.subscribe')[Symbol.asyncIterator]();
