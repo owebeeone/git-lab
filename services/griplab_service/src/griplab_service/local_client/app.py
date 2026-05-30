@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -824,6 +825,7 @@ class FileWatcher:
 
 @dataclass
 class RepoRunState:
+    target_id: str
     repo_path: str
     exit_code: int | None
     output: str = ""
@@ -844,10 +846,12 @@ class CommandSessionState:
 class SessionManager:
     def __init__(self, config: ServiceConfig) -> None:
         self.config = config
-        self.sessions: list[CommandSessionState] = []
+        self.sessions_root = config.workspace.root / ".grip-lab" / "sessions"
+        self.sessions_root.mkdir(parents=True, exist_ok=True)
+        self.sessions: list[CommandSessionState] = load_sessions(self.sessions_root)
         self.session_subscribers: set[asyncio.Queue[None]] = set()
         self.output_subscribers: dict[tuple[str, str], set[asyncio.Queue[None]]] = {}
-        self._index = 0
+        self._index = len(self.sessions)
 
     def add_sessions_subscriber(self) -> asyncio.Queue[None]:
         queue: asyncio.Queue[None] = asyncio.Queue()
@@ -881,9 +885,14 @@ class SessionManager:
             peer_id=peer_id,
             argv=argv,
             started_at=int(time.time() * 1000),
-            targets=[RepoRunState(repo_path=repo, exit_code=None) for repo in repos],
+            targets=[
+                RepoRunState(target_id=f"t{index:06d}", repo_path=repo, exit_code=None)
+                for index, repo in enumerate(repos, start=1)
+            ],
         )
         self.sessions.insert(0, session)
+        self._persist_session(session)
+        self._append_event(session.id, {"event": "accepted", "sessionId": session.id})
         self._publish_sessions()
         for target in session.targets:
             asyncio.create_task(self._run_target(session, target))
@@ -903,7 +912,13 @@ class SessionManager:
 
     async def _run_target(self, session: CommandSessionState, target: RepoRunState) -> None:
         start = time.monotonic()
-        target.output += "$ " + " ".join(session.argv) + "\n"
+        self._append_event(session.id, {
+            "event": "targetStarted",
+            "sessionId": session.id,
+            "targetId": target.target_id,
+            "repoPath": target.repo_path,
+        })
+        self._append_output(session.id, target, "$ " + " ".join(session.argv) + "\n")
         self._publish_output(session.id, target.repo_path)
         cwd = (self.config.workspace.root / target.repo_path).resolve()
         try:
@@ -918,14 +933,23 @@ class SessionManager:
                 chunk = await process.stdout.read(4096)
                 if not chunk:
                     break
-                target.output += chunk.decode("utf-8", errors="replace")
+                self._append_output(session.id, target, chunk.decode("utf-8", errors="replace"))
                 self._publish_output(session.id, target.repo_path)
             target.exit_code = await process.wait()
         except Exception as exc:
-            target.output += f"error: {exc}\n"
+            self._append_output(session.id, target, f"error: {exc}\n")
             target.exit_code = 127
         finally:
             target.duration_ms = int((time.monotonic() - start) * 1000)
+            self._append_event(session.id, {
+                "event": "targetExited",
+                "sessionId": session.id,
+                "targetId": target.target_id,
+                "repoPath": target.repo_path,
+                "exitCode": target.exit_code,
+                "durationMs": target.duration_ms,
+            })
+            self._persist_session(session)
             self._publish_output(session.id, target.repo_path)
             self._publish_sessions()
 
@@ -942,6 +966,32 @@ class SessionManager:
     def _publish_output(self, session_id: str, repo_path: str) -> None:
         for queue in list(self.output_subscribers.get((session_id, repo_path), set())):
             queue.put_nowait(None)
+
+    def _persist_session(self, session: CommandSessionState) -> None:
+        session_dir = self._session_dir(session.id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        for target in session.targets:
+            self._target_dir(session.id, target).mkdir(parents=True, exist_ok=True)
+        atomic_write_json(session_dir / "metadata.json", session_to_metadata_json(session))
+
+    def _append_event(self, session_id: str, event: dict[str, object]) -> None:
+        session_dir = self._session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        with (session_dir / "events.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n")
+
+    def _append_output(self, session_id: str, target: RepoRunState, text: str) -> None:
+        target.output += text
+        target_dir = self._target_dir(session_id, target)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        with (target_dir / "output.log").open("a", encoding="utf-8") as f:
+            f.write(text)
+
+    def _session_dir(self, session_id: str) -> Path:
+        return self.sessions_root / safe_store_name(session_id)
+
+    def _target_dir(self, session_id: str, target: RepoRunState) -> Path:
+        return self._session_dir(session_id) / safe_store_name(target.target_id)
 
 
 def parse_argv(payload: dict[str, Any]) -> list[str]:
@@ -972,6 +1022,7 @@ def session_to_json(session: CommandSessionState) -> dict[str, object]:
         "hidden": session.hidden,
         "targets": [
             {
+                "targetId": target.target_id,
                 "repoPath": target.repo_path,
                 "exitCode": target.exit_code,
                 "durationMs": target.duration_ms,
@@ -980,3 +1031,77 @@ def session_to_json(session: CommandSessionState) -> dict[str, object]:
             for target in session.targets
         ],
     }
+
+
+def session_to_metadata_json(session: CommandSessionState) -> dict[str, object]:
+    return {
+        "id": session.id,
+        "peerId": session.peer_id,
+        "argv": session.argv,
+        "startedAt": session.started_at,
+        "interactive": session.interactive,
+        "hidden": session.hidden,
+        "targets": [
+            {
+                "targetId": target.target_id,
+                "repoPath": target.repo_path,
+                "exitCode": target.exit_code,
+                "durationMs": target.duration_ms,
+            }
+            for target in session.targets
+        ],
+    }
+
+
+def load_sessions(root: Path) -> list[CommandSessionState]:
+    sessions: list[CommandSessionState] = []
+    if not root.exists():
+        return sessions
+    for session_dir in root.iterdir():
+        metadata_path = session_dir / "metadata.json"
+        if not metadata_path.is_file():
+            continue
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            sessions.append(session_from_metadata(metadata, session_dir))
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            continue
+    sessions.sort(key=lambda item: item.started_at, reverse=True)
+    return sessions
+
+
+def session_from_metadata(value: dict[str, Any], session_dir: Path) -> CommandSessionState:
+    targets: list[RepoRunState] = []
+    for index, target_value in enumerate(value.get("targets", []), start=1):
+        target_id = str(target_value.get("targetId", f"t{index:06d}"))
+        output_path = session_dir / safe_store_name(target_id) / "output.log"
+        try:
+            output = output_path.read_text(encoding="utf-8")
+        except OSError:
+            output = ""
+        targets.append(RepoRunState(
+            target_id=target_id,
+            repo_path=str(target_value.get("repoPath", "")),
+            exit_code=target_value.get("exitCode"),
+            duration_ms=target_value.get("durationMs"),
+            output=output,
+        ))
+    return CommandSessionState(
+        id=str(value["id"]),
+        peer_id=str(value.get("peerId", "me")),
+        argv=[str(item) for item in value.get("argv", [])],
+        started_at=int(value.get("startedAt", 0)),
+        targets=targets,
+        interactive=bool(value.get("interactive", False)),
+        hidden=bool(value.get("hidden", False)),
+    )
+
+
+def atomic_write_json(path: Path, value: dict[str, object]) -> None:
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def safe_store_name(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value) or "_"

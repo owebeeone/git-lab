@@ -400,6 +400,87 @@ def test_command_run_updates_sessions_and_output_streams(tmp_path: Path) -> None
     asyncio.run(run())
 
 
+def test_command_sessions_reconstruct_after_restart(tmp_path: Path) -> None:
+    async def run_command_once() -> str:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "sessions.subscribe",
+                        "streamId": "sessions0001",
+                        "payload": {},
+                    })
+                    await ws.receive_json(timeout=2)
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "cmd.run",
+                        "payload": {
+                            "argv": ["python", "-c", "print('persisted-session')"],
+                            "repos": [""],
+                            "peerId": "me",
+                        },
+                    })
+                    response = await ws.receive_json(timeout=2)
+                    session_id = response["payload"]["sessionId"]
+                    for _ in range(8):
+                        msg = await ws.receive_json(timeout=2)
+                        if msg["method"] != "sessions.subscribe":
+                            continue
+                        target = msg["payload"]["payload"]["sessions"][0]["targets"][0]
+                        if target["exitCode"] is not None:
+                            assert target["exitCode"] == 0
+                            return session_id
+                    raise AssertionError("session did not finish")
+        finally:
+            server.stop()
+
+    async def verify_restart(session_id: str) -> None:
+        config = load_config(tmp_path / "client.json")
+        session_dir = config.workspace.root / ".grip-lab" / "sessions" / session_id
+        assert (session_dir / "metadata.json").is_file()
+        assert "persisted-session" in (session_dir / "t000001" / "output.log").read_text(encoding="utf-8")
+        assert (session_dir / "events.jsonl").is_file()
+
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "sessions.subscribe",
+                        "streamId": "sessions0001",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    restored = snapshot["payload"]["payload"]["sessions"][0]
+                    assert restored["id"] == session_id
+                    assert restored["targets"][0]["exitCode"] == 0
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "session.output.subscribe",
+                        "streamId": "output0001",
+                        "payload": {"sessionId": session_id, "repoPath": ""},
+                    })
+                    output = await ws.receive_json(timeout=2)
+                    assert "persisted-session" in output["payload"]["payload"]["output"]
+        finally:
+            server.stop()
+
+    restored_session_id = asyncio.run(run_command_once())
+    asyncio.run(verify_restart(restored_session_id))
+
+
 def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=100))
