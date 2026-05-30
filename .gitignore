@@ -12,6 +12,9 @@ dist/
 *.tgz
 .DS_Store
 coverage/
+__pycache__/
+.pytest_cache/
+*.egg-info/
 
 # Local scratch space: dump things here we don't want in the repo
 scratch/

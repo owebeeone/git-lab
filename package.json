@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "test": "node scripts/no-react-state.test.mjs",
+    "test:unit": "node scripts/service-protocol.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -12,7 +12,8 @@ if (typeof localStorage !== 'undefined' && !localStorage.getItem(CR_PREF_KEY)) {
   }));
 }
 import { registerAllTaps } from './taps';
-import { registerLabTaps } from './lab/taps';
+import { registerLabMockTaps } from './lab/taps';
+import { registerLabServiceTaps } from './lab/taps.service';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import LabApp from './lab/LabApp';
@@ -21,9 +22,14 @@ import LabApp from './lab/LabApp';
 //   'lab'   (default) -> the grip-lab UI proposal mock
 //   'hello'           -> the minimal starter app
 const surface = (import.meta.env.VITE_GL_UI as string | undefined) ?? 'lab';
+const dataMode = (import.meta.env.VITE_GL_DATA as string | undefined) ?? 'mock';
 
 registerAllTaps();
-registerLabTaps();
+if (dataMode === 'service') {
+  registerLabServiceTaps();
+} else {
+  registerLabMockTaps();
+}
 
 const root = ReactDOM.createRoot(document.getElementById('root')!);
 root.render(

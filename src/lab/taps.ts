@@ -46,7 +46,7 @@ import { registerSessionOutputTap } from './sessionOutputTap';
 // All mock state is held in simple settable atom taps. When the backend lands,
 // these get replaced by taps that subscribe to the delta protocol; the
 // component tree and grips stay the same.
-export function registerLabTaps() {
+export function registerLabUiTaps() {
   grok.registerTap(createAtomValueTap(CURRENT_VIEW, { initial: CURRENT_VIEW.defaultValue!, handleGrip: CURRENT_VIEW_TAP }));
   grok.registerTap(createAtomValueTap(THEME, { initial: THEME.defaultValue!, handleGrip: THEME_TAP }));
   grok.registerTap(createAtomValueTap(WORKSPACE_LAYOUT, { initial: WORKSPACE_LAYOUT.defaultValue!, handleGrip: WORKSPACE_LAYOUT_TAP }));
@@ -84,7 +84,15 @@ export function registerLabTaps() {
   grok.registerTap(createAtomValueTap(RUN_REPOS_OPEN, { initial: RUN_REPOS_OPEN.defaultValue!, handleGrip: RUN_REPOS_OPEN_TAP }));
   grok.registerTap(createAtomValueTap(PURGE_DAYS, { initial: PURGE_DAYS.defaultValue!, handleGrip: PURGE_DAYS_TAP }));
   grok.registerTap(createAtomValueTap(RUN_DIALOG_OPEN, { initial: RUN_DIALOG_OPEN.defaultValue!, handleGrip: RUN_DIALOG_OPEN_TAP }));
+}
+
+export function registerLabMockTaps() {
+  registerLabUiTaps();
   registerGraphSimTap();
   registerFileContentTap();
   registerSessionOutputTap();
+}
+
+export function registerLabTaps() {
+  registerLabMockTaps();
 }
