@@ -132,6 +132,29 @@ assert.deepEqual(treeStreamEvent.value.payload, {
   entries: [{ repoPath: '', path: 'README.md', kind: 'file' }],
 });
 
+const presenceIterator = client.subscribe('peer.presence.subscribe')[Symbol.asyncIterator]();
+const nextPresenceEvent = presenceIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 4);
+assert.equal(transport.sent[3].method, 'peer.presence.subscribe');
+assert.equal(transport.sent[3].streamId, 's000003');
+transport.push({
+  messageId: transport.sent[3].messageId,
+  kind: 'stream-event',
+  method: 'peer.presence.subscribe',
+  streamId: 's000003',
+  payload: {
+    streamId: 's000003',
+    seq: 1,
+    event: 'snapshot',
+    payload: { peers: [{ id: 'alice', name: 'Alice', online: true }] },
+  },
+});
+const presenceStreamEvent = await nextPresenceEvent;
+assert.deepEqual(presenceStreamEvent.value.payload, {
+  peers: [{ id: 'alice', name: 'Alice', online: true }],
+});
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');

@@ -5,11 +5,13 @@ import {
 } from './grips';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
 import { createServiceFileContentTap } from './serviceTaps/fileContentTap';
+import { createServicePeersTap } from './serviceTaps/peersTap';
 import { createServiceSessionOutputTap } from './serviceTaps/sessionOutputTap';
 import { createServiceSessionsTap } from './serviceTaps/sessionsTap';
 import { createServiceTreeTap } from './serviceTaps/treeTap';
 import { createServiceWorkspaceStatusTap } from './serviceTaps/workspaceStatusTap';
 import { createServiceStateTap } from './serviceStateTap';
+import { LAB_HUB_PRESENCE } from './dataMode';
 import { registerLabUiTaps } from './taps';
 
 function registerServicePlaceholderTaps() {
@@ -28,5 +30,6 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceFileContentTap());
   grok.registerTap(createServiceSessionsTap());
   grok.registerTap(createServiceSessionOutputTap());
+  if (LAB_HUB_PRESENCE) grok.registerTap(createServicePeersTap());
   registerServicePlaceholderTaps();
 }
