@@ -273,6 +273,31 @@ transport.push({
 const routedEvent = await nextRoutedEvent;
 assert.deepEqual(routedEvent.value.payload, { repos: [{ path: '', name: 'remote' }] });
 
+const streamErrorIterator = client.subscribe('diff.subscribe')[Symbol.asyncIterator]();
+const nextStreamError = streamErrorIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 8);
+assert.equal(transport.sent[7].method, 'diff.subscribe');
+transport.push({
+  messageId: transport.sent[7].messageId,
+  kind: 'error',
+  method: 'diff.subscribe',
+  payload: {},
+  error: {
+    code: 'unknown-method',
+    message: 'unknown method: diff.subscribe',
+    details: {},
+  },
+});
+const streamError = await nextStreamError;
+assert.equal(streamError.value.event, 'error');
+assert.deepEqual(streamError.value.payload, {
+  code: 'unknown-method',
+  message: 'unknown method: diff.subscribe',
+  details: {},
+});
+assert.equal((await streamErrorIterator.next()).done, true);
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');

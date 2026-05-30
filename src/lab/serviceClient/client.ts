@@ -31,6 +31,7 @@ export class ServiceClient {
     queue: ServiceStreamEvent[];
     waiters: Array<(value: IteratorResult<ServiceStreamEvent>) => void>;
   }>();
+  private readonly streamRequestIds = new Map<string, string>();
   private readonly statusListeners = new Set<StatusListener>();
   private currentStatus: ServiceConnectionState;
   private reconnecting = false;
@@ -117,21 +118,21 @@ export class ServiceClient {
     const messageId = this.nextMessageId();
     const streamId = this.nextStreamId();
     this.streams.set(streamId, { queue: [], waiters: [] });
+    this.streamRequestIds.set(messageId, streamId);
     this.transport.send(parseServiceEnvelope({ messageId, kind: 'request', method, streamId, payload }));
     try {
       while (!signal?.aborted) {
         const event = await this.nextStreamEvent(streamId, signal);
         if (event.done) return;
         if (event.value.event === 'error') {
-          const message = typeof event.value.payload.message === 'string'
-            ? event.value.payload.message
-            : 'service stream error';
-          throw new Error(message);
+          yield event.value;
+          return;
         }
         yield event.value;
       }
     } finally {
       this.streams.delete(streamId);
+      this.streamRequestIds.delete(messageId);
     }
   }
 
@@ -223,20 +224,41 @@ export class ServiceClient {
   private dispatch(message: ServiceEnvelope): void {
     if (message.kind === 'response' || message.kind === 'error') {
       const pending = this.pending.get(message.messageId);
-      if (!pending) return;
-      this.pending.delete(message.messageId);
-      if (message.kind === 'error') pending.reject(new Error(message.error?.message ?? 'service error'));
-      else pending.resolve(message);
+      if (pending) {
+        this.pending.delete(message.messageId);
+        if (message.kind === 'error') pending.reject(new Error(message.error?.message ?? 'service error'));
+        else pending.resolve(message);
+        return;
+      }
+      if (message.kind === 'error') {
+        const streamId = message.streamId ?? this.streamRequestIds.get(message.messageId);
+        if (streamId) {
+          this.enqueueStreamEvent(streamId, {
+            streamId,
+            seq: 0,
+            event: 'error',
+            payload: {
+              code: message.error?.code ?? 'service-error',
+              message: message.error?.message ?? 'service stream error',
+              details: message.error?.details ?? {},
+            },
+          });
+        }
+      }
       return;
     }
     if (message.kind === 'stream-event' && message.streamId) {
-      const stream = this.streams.get(message.streamId);
-      if (!stream) return;
       const event = parseServiceStreamEvent(message.payload);
-      const waiter = stream.waiters.shift();
-      if (waiter) waiter({ done: false, value: event });
-      else stream.queue.push(event);
+      this.enqueueStreamEvent(message.streamId, event);
     }
+  }
+
+  private enqueueStreamEvent(streamId: string, event: ServiceStreamEvent): void {
+    const stream = this.streams.get(streamId);
+    if (!stream) return;
+    const waiter = stream.waiters.shift();
+    if (waiter) waiter({ done: false, value: event });
+    else stream.queue.push(event);
   }
 
   private nextStreamEvent(streamId: string, signal?: AbortSignal): Promise<IteratorResult<ServiceStreamEvent>> {
