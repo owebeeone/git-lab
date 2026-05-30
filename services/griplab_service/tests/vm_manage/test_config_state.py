@@ -261,3 +261,71 @@ network = "none"
 
     assert exit_code == 0
     assert "native-ok" in captured.out
+
+
+def test_wsl2_attach_exec_and_detach(tmp_path, monkeypatch, capsys) -> None:
+    config_dir = tmp_path / "vm_manage"
+    config_dir.mkdir()
+    (config_dir / "glvm.toml").write_text(
+        """
+[[profiles]]
+name = "win"
+image = "ubuntu-lts"
+network = "none"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+
+    def fake_run(command, check=False):
+        calls.append(command)
+        assert check is False
+        return Result()
+
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.subprocess.run", fake_run)
+
+    create_exit = main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--state-file",
+            str(state_file),
+            "create",
+            "--provider",
+            "wsl2",
+            "--profile",
+            "win",
+            "--name",
+            "magenta",
+            "--distro",
+            "Ubuntu",
+        ]
+    )
+    exec_exit = main(
+        [
+            "--state-file",
+            str(state_file),
+            "exec",
+            "magenta",
+            "--",
+            "uname",
+            "-a",
+        ]
+    )
+    destroy_exit = main(["--state-file", str(state_file), "destroy", "magenta"])
+
+    captured = capsys.readouterr()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+
+    assert create_exit == 0
+    assert exec_exit == 0
+    assert destroy_exit == 0
+    assert calls == [["wsl", "--distribution", "Ubuntu", "--", "uname", "-a"]]
+    assert "attached machine magenta (wsl2:Ubuntu)" in captured.out
+    assert "detached machine magenta" in captured.out
+    assert state["machines"] == {}

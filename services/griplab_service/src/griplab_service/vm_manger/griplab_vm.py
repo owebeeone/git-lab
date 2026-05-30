@@ -198,6 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--provider", help="Provider name override")
     create_parser.add_argument("--profile", required=True, help="Profile name")
     create_parser.add_argument("--name", required=True, help="Machine name")
+    create_parser.add_argument("--distro", help="Existing WSL distro name to attach")
 
     destroy_parser = subparsers.add_parser("destroy", help="Destroy a machine")
     destroy_parser.add_argument("name", help="Machine name")
@@ -631,6 +632,8 @@ def run_create(args: argparse.Namespace) -> int:
     config = read_project_config(Path(args.project_root))
     profile = find_profile(config, args.profile)
     provider = choose_provider(config, args.provider)
+    if provider == "wsl2":
+        return run_create_wsl2(args, config, profile)
     if provider != "native-host":
         print(f"provider not implemented for create: {provider}")
         return 2
@@ -663,6 +666,42 @@ def run_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_create_wsl2(
+    args: argparse.Namespace,
+    config: ProjectConfig,
+    profile: dict[str, object],
+) -> int:
+    if not args.distro:
+        print("wsl2 create requires --distro for v1 attach mode")
+        return 2
+
+    inputs = resolved_profile_inputs(config, profile, "wsl2")
+    store = state_store_from_args(args)
+    state = store.read()
+    machines = state_machines(state)
+    if args.name in machines:
+        print(f"machine already exists: {args.name}")
+        return 2
+
+    machines[args.name] = {
+        "provider": "wsl2",
+        "provider_id": args.distro,
+        "profile": args.profile,
+        "image_alias": inputs["image_alias"],
+        "resolved_image": inputs["resolved_image"],
+        "network_alias": inputs["network_alias"],
+        "resolved_network": inputs["resolved_network"],
+        "state": "attached",
+        "owner": getpass.getuser(),
+        "owned": False,
+        "created_at": utc_now(),
+        "last_seen_at": utc_now(),
+    }
+    store.write(state)
+    print(f"attached machine {args.name} (wsl2:{args.distro})")
+    return 0
+
+
 def run_list(args: argparse.Namespace) -> int:
     state = state_store_from_args(args).read()
     machines = state.get("machines", {})
@@ -691,6 +730,11 @@ def run_destroy(args: argparse.Namespace) -> int:
     if not isinstance(machine, dict):
         print(f"machine not found: {args.name}")
         return 2
+    if machine.get("provider") == "wsl2" and machine.get("owned") is False:
+        del machines[args.name]
+        store.write(state)
+        print(f"detached machine {args.name}")
+        return 0
     if machine.get("provider") != "native-host":
         print(f"provider not implemented for destroy: {machine.get('provider')}")
         return 2
@@ -719,7 +763,15 @@ def run_exec(args: argparse.Namespace) -> int:
         return 2
 
     machine = require_machine(state_store_from_args(args).read(), args.name)
-    if machine.get("provider") != "native-host":
+    provider = machine.get("provider")
+    if provider == "wsl2":
+        distro = str(machine.get("provider_id"))
+        result = subprocess.run(
+            ["wsl", "--distribution", distro, "--"] + command,
+            check=False,
+        )
+        return int(result.returncode)
+    if provider != "native-host":
         print(f"provider not implemented for exec: {machine.get('provider')}")
         return 2
 
