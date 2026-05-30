@@ -115,6 +115,7 @@ request/response calls.
 | `workspaceStatusTap.ts` | `createAsyncStreamMultiTap` | `workspace.status.subscribe` stream |
 | `treeTap.ts` | `createAsyncStreamMultiTap` | `tree.subscribe` stream |
 | `fileContentTap.ts` | `createAsyncStreamMultiTap` | `file.subscribe` plus window updates |
+| `diffContentTap.ts` | `createAsyncStreamMultiTap` | `diff.subscribe` plus `diff.window.update` |
 | `sessionsTap.ts` | `createAsyncStreamMultiTap` | `sessions.subscribe` stream |
 | `sessionOutputTap.ts` | `createAsyncStreamMultiTap` | `session.output.subscribe` stream |
 | `terminalTap.ts` | `createAsyncStreamMultiTap` | PTY output stream plus input helpers |
@@ -126,7 +127,8 @@ request/response calls.
 
 `ServiceClient.subscribe()` should expose an async event stream that can be
 consumed by `createAsyncStreamMultiTap`. One-shot taps should use the normal
-request/response path.
+request/response path. `diff.get` is a one-shot `ServiceClient.request()` path,
+not a stream tap.
 
 ## Combined Step 0: Protocol Skeleton + UI Tap-Bundle Split
 
@@ -388,7 +390,8 @@ Verification:
 - scroll changes `FILE_WINDOW` and sends `file.window.update`.
 - manual local file edit updates content.
 - mock diff/file consumers are moved toward grip-fed file data where practical,
-  without requiring cross-peer diff service behavior yet.
+  without requiring cross-peer diff service behavior or structured diff hunks
+  yet. Structured diff hunks are deferred to Step 10E-2.
 
 Exit:
 
@@ -491,6 +494,8 @@ Exit:
 
 - local single-machine app is usable without mock data for core workspace,
   files, and sessions.
+- Service-mode live diff is not expected yet. Mock diff remains the diff path
+  until hub diff stream Step 10D-4 and browser integration Steps 10E-1/10E-2.
 
 ## Combined Step 7: Hub + Presence + Routing
 
@@ -721,7 +726,10 @@ Deliverables:
 - `diffstream.codec` JSON round-trip for
   `application/vnd.griplab.diff+json;version=1`.
 - version/id conventions for `diffId`, payload `version`, and hunk ids.
-- golden fixtures for empty/same diff and diagnostics.
+- golden fixtures for empty/same diff and diagnostics in
+  `services/diffstream/fixtures/`.
+- `griplab_service` consumes `diffstream` through the same local editable/path
+  dependency pattern used for `services/filedelta`.
 - no imports from `griplab_service`, `aiohttp`, watchdog, git, or GRIP.
 
 Verification:
@@ -764,7 +772,7 @@ Verification:
 - same/add/delete/replace hunk conversion tests.
 - context line and window-boundary tests.
 - one-based line number tests.
-- binary/decode/missing input diagnostics remain codec-valid.
+- same-path and window-bound validation tests.
 
 Exit:
 
@@ -786,6 +794,8 @@ Deliverables:
 - `diffstream.connection.DiffConnection`.
 - source-stream protocol for left/right snapshots, resets, and errors.
 - ref-counted subscribers.
+- sharing key fields: left endpoint, right endpoint, requested window,
+  `contextLines`, and content type.
 - recompute when either source changes.
 - coalescing policy for concurrent left/right updates.
 - diagnostics while either side is mid-reset or unavailable.
@@ -802,7 +812,8 @@ Verification:
 - fake left/right source snapshots produce an ordered diff snapshot.
 - update on either side recomputes.
 - concurrent updates coalesce into ordered snapshots.
-- source reset/error produces diagnostics.
+- source reset/error/binary/decode/missing outcomes produce diagnostics using
+  codec types from Step 10D-1.
 - ref-count tests prove source streams close after the last subscriber.
 
 Exit:
@@ -818,8 +829,8 @@ Backend scope:
 
 Frontend scope:
 
-- Protocol types and tap test fixtures only. Full `DiffViewerView` replacement
-  is Step 10E-2.
+- None. Shared JSON fixtures on disk are allowed; all `src/lab` TypeScript
+  types, validators, and taps are Step 10E-1.
 
 Deliverables:
 
@@ -829,15 +840,25 @@ Deliverables:
 - optional one-shot `diff.get` returning the same structured payload shape.
 - hub adapter that turns routed `file.subscribe` streams into `diffstream`
   source streams.
+- source peers serve both `working` and `head` refs for diff endpoints before
+  stock UI defaults are considered service-ready; otherwise service-mode diff
+  must temporarily default to `working`/`working`.
+- hub resolves `peerId` through the registry; diff endpoints do not carry
+  `workspaceId` in v1.
 - structured hunk payload `application/vnd.griplab.diff+json;version=1`.
 - diagnostics for missing file, binary file, decode failure, truncation,
   peer-offline, and unsupported ref.
 
 Verification:
 
+- reuse the existing dual local-client hub test harness rather than creating a
+  separate ad hoc fixture.
 - two local service peers through the hub produce a routed synthetic diff.
+- fixture covers the stock `head` vs `working` pair, or documents the temporary
+  `working`/`working` service fallback.
 - editing either source file updates the synthetic diff stream.
-- `diff.window.update`, `diff.unsubscribe`, and `diff.get` tests.
+- `diff.window.update`, `diff.unsubscribe`, and `diff.get` tests, including
+  `includeUnifiedText: true`.
 - peer disconnect produces a structured diagnostic or stream error.
 - full service Python test suite remains green.
 
@@ -862,6 +883,13 @@ Deliverables:
 - `DIFF_WINDOW` as the diff-specific window input grip.
 - TypeScript diff payload types/parser in `src/lab/serviceClient/diff`.
 - TS fixture tests consume Python golden fixtures from `services/diffstream`.
+- register `createServiceDiffContentTap()` in `registerLabServiceTaps()`.
+- put service-owned diff output grips in `grips.service.ts` or the established
+  service grip module; keep UI atoms separate.
+- tap request keys include selected file, left/right endpoints, `DIFF_WINDOW`,
+  and destination context identity such as `diff:main`.
+- debounced `diff.window.update` mirrors the `fileContentTap.ts` window update
+  pattern.
 
 Verification:
 
@@ -869,6 +897,7 @@ Verification:
 - `diffContentTap` maps snapshots to `DIFF_HUNKS`, `DIFF_DIAGNOSTICS`,
   `DIFF_STREAM_STATUS`, and `DIFF_VERSION`.
 - `DIFF_WINDOW` participates in request keys and window update calls.
+- service tap unregister/unsubscribe closes the diff stream.
 - `npm run test:unit`
 - `npm run build`
 
@@ -891,7 +920,9 @@ Deliverables:
 
 - `DiffViewerView` renders structured hunks from `diff.subscribe`.
 - diff view uses a keyed context such as `diff:main`.
-- mock mode emits the same structured hunk model at the tap boundary.
+- `mockDiffContentTap.ts` or an equivalent mock provider emits the same
+  structured hunk model at the tap boundary, converting from the existing
+  TypeScript LCS helper if needed.
 - existing state links still restore selected file, endpoints, and focus line.
 - `DiffViewerView` no longer imports static file content for service mode.
 
@@ -962,6 +993,8 @@ Deliverables:
 - local operation docs.
 - service-mode manual test script.
 - mock-mode regression script.
+- manual diff smoke script after Step 10E-2: hub plus two clients, open diff
+  view, edit a source file, observe hunk update, and verify focus-line link.
 
 Verification:
 
@@ -973,6 +1006,8 @@ Verification:
 - `npm test`
 - service Python tests.
 - filedelta Python and TypeScript tests.
+- `uv run --with pytest --with-editable services/diffstream pytest services/diffstream/tests -q`
+- hub synthetic diff integration tests from Step 10D-4.
 
 Exit:
 
@@ -1017,5 +1052,7 @@ Pause the roll-build if:
 - mock mode breaks
 - filedelta fixture tests fail
 - service file stream bugs cannot be separated from filedelta protocol bugs
+- diffstream fixture tests fail
+- hub diff stream bugs cannot be separated from pure diffstream semantics
 - command/session persistence cannot reconstruct after restart
 - hub reconnect loses authoritative state
