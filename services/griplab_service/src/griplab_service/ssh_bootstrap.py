@@ -118,15 +118,24 @@ class EphemeralBootstrapManager:
                 ),
                 command,
             ),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         time.sleep(0.25)
         if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=1)
+            logs = {
+                "stdout": log_stdout,
+                "stderr": log_stderr,
+                "remote": remote_log_tails(payload, {"stdout": log_stdout, "stderr": log_stderr}),
+                "sshStdout": decode_process_output(stdout),
+                "sshStderr": decode_process_output(stderr),
+            }
             return {
                 "ok": False,
                 "error": f"ssh bootstrap exited {process.returncode}",
                 "health": process_health(False, f"ssh bootstrap exited {process.returncode}"),
+                "logs": logs,
             }
         self.processes[bootstrap_id] = BootstrapProcess(
             bootstrap_id=bootstrap_id,
@@ -500,6 +509,23 @@ def process_health(ok: bool, summary: str) -> dict[str, object]:
         "status": "ok" if ok else "error",
         "checks": [{"id": "process", "status": "ok" if ok else "error", "summary": summary}],
     }
+
+
+def decode_process_output(value: bytes | None) -> str:
+    return (value or b"").decode("utf-8", errors="replace").strip()
+
+
+def remote_log_tails(payload: dict[str, Any], paths: dict[str, str], *, timeout: float = 3, lines: int = 120) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for name, path in paths.items():
+        quoted = shlex.quote(path)
+        command = f"if test -f {quoted}; then tail -n {int(lines)} {quoted}; else echo '<missing>'; fi"
+        try:
+            output = _run_ssh(payload, command, timeout=timeout).stdout
+            result[name] = {"path": path, "ok": True, "text": output.rstrip()}
+        except (OSError, ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+            result[name] = {"path": path, "ok": False, "error": str(exc)}
+    return result
 
 
 def remote_probe_command(location: str) -> str:

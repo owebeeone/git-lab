@@ -659,6 +659,11 @@ class PeerRegistry:
                         "status": "ok" if value.get("ok") else "error",
                         "summary": str(value.get("summary", "")),
                     })
+        start = result.get("start", {})
+        if isinstance(start, dict):
+            logs = start.get("logs", {})
+            if isinstance(logs, dict):
+                self._append_log_checks(checks, logs)
         return {
             "status": status,
             "summary": summary,
@@ -770,6 +775,25 @@ class PeerRegistry:
             "checks": checks,
             "updatedAt": int(state.get("updatedAt", int(time.time() * 1000))),
         }
+
+    def _append_log_checks(self, checks: list[dict[str, object]], logs: dict[str, object]) -> None:
+        remote = logs.get("remote", {})
+        if isinstance(remote, dict):
+            for name in ("stdout", "stderr"):
+                value = remote.get(name, {})
+                if not isinstance(value, dict):
+                    continue
+                text = str(value.get("text") or value.get("error") or "")
+                path = str(value.get("path", ""))
+                checks.append({
+                    "id": f"remote-{name}",
+                    "status": "ok" if value.get("ok") else "error",
+                    "summary": f"{path}\n{text}".rstrip(),
+                })
+        for name in ("sshStdout", "sshStderr"):
+            text = str(logs.get(name, "")).strip()
+            if text:
+                checks.append({"id": name, "status": "error", "summary": text})
 
     def _load_collaborators(self) -> dict[str, CollaboratorRecord]:
         records = {item.peer_id: item for item in load_collaborators(self.collaborators_path)}
