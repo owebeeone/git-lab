@@ -15,6 +15,9 @@ import { SERVICE_STREAM_RETRY } from './retry';
 interface SessionOutputPayload {
   output: string;
   exitCode: number | null;
+  durationMs?: number | null;
+  userMs?: number | null;
+  systemMs?: number | null;
 }
 
 type SessionOutputOuts = {

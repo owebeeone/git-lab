@@ -11,6 +11,13 @@ const LIGHT = { background: '#ffffff', foreground: '#1c1e21', cursor: '#1a56db' 
 
 export interface TermHandle {
   dispose(): void;
+  update(opts: {
+    content?: string;
+    interactive?: boolean;
+    dark?: boolean;
+    onData?: (data: string) => void;
+    onResize?: (cols: number, rows: number) => void;
+  }): void;
   search(query: string): void;
 }
 
@@ -24,12 +31,17 @@ export function createTerminal(
     onResize?: (cols: number, rows: number) => void;
   },
 ): TermHandle {
+  let content = opts.content ?? '';
+  let interactive = !!opts.interactive;
+  let boundInteractive = interactive;
+  let boundOnData = opts.onData;
+  let onDataDispose: { dispose(): void } | undefined;
   const term = new Terminal({
     convertEol: true,
     fontSize: 12,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-    disableStdin: !opts.interactive,
-    cursorBlink: !!opts.interactive,
+    disableStdin: !interactive,
+    cursorBlink: interactive,
     scrollback: 5000,
     theme: opts.dark === false ? LIGHT : DARK,
   });
@@ -49,14 +61,36 @@ export function createTerminal(
   const ro = new ResizeObserver(safeFit);
   ro.observe(el);
 
-  if (opts.content) term.write(opts.content);
+  if (content) term.write(content);
 
-  if (opts.interactive) {
+  const bindInput = (nextInteractive?: boolean, nextOnData?: (data: string) => void) => {
+    if (!!nextInteractive === boundInteractive && nextOnData === boundOnData) return;
+    boundInteractive = !!nextInteractive;
+    boundOnData = nextOnData;
+    onDataDispose?.dispose();
+    onDataDispose = undefined;
+    interactive = !!nextInteractive;
+    term.options.disableStdin = !interactive;
+    term.options.cursorBlink = interactive;
+    if (!interactive) return;
+    if (nextOnData) {
+      onDataDispose = term.onData(nextOnData);
+      return;
+    }
+    term.write('\u001b[2m# mock interactive session — type to echo\u001b[0m\r\n$ ');
+    onDataDispose = term.onData((d) => {
+      if (d === '\r') term.write('\r\n$ ');
+      else if (d === '\u007f') term.write('\b \b'); // backspace
+      else term.write(d);
+    });
+  };
+
+  if (interactive) {
     if (opts.onData) {
-      term.onData(opts.onData);
+      onDataDispose = term.onData(opts.onData);
     } else {
       term.write('\u001b[2m# mock interactive session — type to echo\u001b[0m\r\n$ ');
-      term.onData((d) => {
+      onDataDispose = term.onData((d) => {
         if (d === '\r') term.write('\r\n$ ');
         else if (d === '\u007f') term.write('\b \b'); // backspace
         else term.write(d);
@@ -65,7 +99,27 @@ export function createTerminal(
   }
 
   return {
-    dispose() { ro.disconnect(); term.dispose(); },
+    dispose() {
+      onDataDispose?.dispose();
+      ro.disconnect();
+      term.dispose();
+    },
+    update(next) {
+      opts.onResize = next.onResize;
+      term.options.theme = next.dark === false ? LIGHT : DARK;
+      if ((next.content ?? '') !== content) {
+        const nextContent = next.content ?? '';
+        if (nextContent.startsWith(content)) {
+          term.write(nextContent.slice(content.length));
+        } else {
+          term.clear();
+          if (nextContent) term.write(nextContent);
+        }
+        content = nextContent;
+      }
+      bindInput(next.interactive, next.onData);
+      safeFit();
+    },
     search(query: string) {
       try {
         if (query) search.findNext(query);

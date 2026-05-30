@@ -18,6 +18,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    import resource
+except ImportError:  # pragma: no cover - Windows hardening is deferred.
+    resource = None  # type: ignore[assignment]
+
 from aiohttp import WSMsgType, web
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
@@ -1179,6 +1184,8 @@ class RepoRunState:
     exit_code: int | None
     output: str = ""
     duration_ms: int | None = None
+    user_ms: int | None = None
+    system_ms: int | None = None
 
 
 @dataclass
@@ -1199,6 +1206,49 @@ class TerminalProcess:
     master_fd: int
     process: asyncio.subprocess.Process
     read_task: asyncio.Task[None]
+
+
+def child_cpu_ms() -> tuple[int, int] | None:
+    if resource is None:
+        return None
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return int(usage.ru_utime * 1000), int(usage.ru_stime * 1000)
+
+
+def elapsed_cpu_ms(start: tuple[int, int] | None) -> tuple[int | None, int | None]:
+    end = child_cpu_ms()
+    if start is None or end is None:
+        return None, None
+    return max(0, end[0] - start[0]), max(0, end[1] - start[1])
+
+
+def format_elapsed_ms(value: int | None) -> str:
+    if value is None:
+        return "?"
+    if value < 1000:
+        return f"{value}ms"
+    seconds = value / 1000
+    return f"{seconds:.1f}s" if seconds < 10 else f"{seconds:.0f}s"
+
+
+def exit_status_line(target: RepoRunState) -> str:
+    if target.exit_code is None:
+        return ""
+    if target.user_ms is None and target.system_ms is None:
+        return f"-- exit status {target.exit_code} wall {format_elapsed_ms(target.duration_ms)} --"
+    return (
+        f"-- exit status {target.exit_code} "
+        f"sys {format_elapsed_ms(target.system_ms)} "
+        f"usr {format_elapsed_ms(target.user_ms)} --"
+    )
+
+
+def output_with_exit_status(target: RepoRunState) -> str:
+    line = exit_status_line(target)
+    if not line:
+        return target.output
+    prefix = "" if target.output.endswith("\n") or not target.output else "\n"
+    return f"{target.output}{prefix}{line}\n"
 
 
 class SessionManager:
@@ -1334,8 +1384,11 @@ class SessionManager:
         return {
             "sessionId": session_id,
             "repoPath": repo_path,
-            "output": target.output if target else "",
+            "output": output_with_exit_status(target) if target else "",
             "exitCode": target.exit_code if target else None,
+            "durationMs": target.duration_ms if target else None,
+            "userMs": target.user_ms if target else None,
+            "systemMs": target.system_ms if target else None,
         }
 
     def query(self, payload: dict[str, Any]) -> dict[str, object]:
@@ -1376,6 +1429,7 @@ class SessionManager:
 
     async def _run_target(self, session: CommandSessionState, target: RepoRunState) -> None:
         start = time.monotonic()
+        cpu_start = child_cpu_ms()
         self._append_event(session.id, {
             "event": "targetStarted",
             "sessionId": session.id,
@@ -1405,6 +1459,7 @@ class SessionManager:
             target.exit_code = 127
         finally:
             target.duration_ms = int((time.monotonic() - start) * 1000)
+            target.user_ms, target.system_ms = elapsed_cpu_ms(cpu_start)
             self._append_event(session.id, {
                 "event": "targetExited",
                 "sessionId": session.id,
@@ -1412,6 +1467,8 @@ class SessionManager:
                 "repoPath": target.repo_path,
                 "exitCode": target.exit_code,
                 "durationMs": target.duration_ms,
+                "userMs": target.user_ms,
+                "systemMs": target.system_ms,
             })
             self._persist_session(session)
             self._publish_output(session.id, target.repo_path)
@@ -1548,7 +1605,9 @@ def session_to_json(session: CommandSessionState) -> dict[str, object]:
                 "repoPath": target.repo_path,
                 "exitCode": target.exit_code,
                 "durationMs": target.duration_ms,
-                "output": target.output,
+                "userMs": target.user_ms,
+                "systemMs": target.system_ms,
+                "output": output_with_exit_status(target),
             }
             for target in session.targets
         ],
@@ -1569,6 +1628,8 @@ def session_to_metadata_json(session: CommandSessionState) -> dict[str, object]:
                 "repoPath": target.repo_path,
                 "exitCode": target.exit_code,
                 "durationMs": target.duration_ms,
+                "userMs": target.user_ms,
+                "systemMs": target.system_ms,
             }
             for target in session.targets
         ],
@@ -1615,6 +1676,8 @@ def session_from_metadata(value: dict[str, Any], session_dir: Path) -> CommandSe
             repo_path=str(target_value.get("repoPath", "")),
             exit_code=target_value.get("exitCode"),
             duration_ms=target_value.get("durationMs"),
+            user_ms=target_value.get("userMs"),
+            system_ms=target_value.get("systemMs"),
             output=output,
         ))
     return CommandSessionState(

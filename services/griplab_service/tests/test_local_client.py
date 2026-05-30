@@ -507,8 +507,11 @@ def test_command_run_updates_sessions_and_output_streams(tmp_path: Path) -> None
                                 break
                     assert "session-ok" in final_output["payload"]["payload"]["output"]
 
-                    for _ in range(5):
+                    exit_output = ""
+                    for _ in range(8):
                         msg = await ws.receive_json(timeout=2)
+                        if msg["method"] == "session.output.subscribe":
+                            exit_output = msg["payload"]["payload"]["output"]
                         if msg["method"] == "sessions.subscribe":
                             target = msg["payload"]["payload"]["sessions"][0]["targets"][0]
                             if target["exitCode"] is not None:
@@ -516,6 +519,17 @@ def test_command_run_updates_sessions_and_output_streams(tmp_path: Path) -> None
                                 break
                     else:
                         raise AssertionError("command session did not finish")
+
+                    if "-- exit status 0 " not in exit_output:
+                        for _ in range(5):
+                            msg = await ws.receive_json(timeout=2)
+                            if msg["method"] == "session.output.subscribe":
+                                exit_output = msg["payload"]["payload"]["output"]
+                                if "-- exit status 0 " in exit_output:
+                                    break
+                    assert "-- exit status 0 " in exit_output
+                    assert "sys " in exit_output
+                    assert "usr " in exit_output
         finally:
             server.stop()
 

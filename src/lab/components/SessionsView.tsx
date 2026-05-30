@@ -1,4 +1,5 @@
 import { useGrip } from '@owebeeone/grip-react';
+import { PureComponent } from 'react';
 import {
   SESSIONS, SESSIONS_TAP,
   SELECTED_SESSION, SELECTED_SESSION_TAP,
@@ -63,33 +64,70 @@ function validateCommand(cmd: string, repoCount: number): { errors: string[]; wa
   return { errors, warnings, argv };
 }
 
-function TerminalPane({
-  termKey, content, interactive, dark, sessionId, peerId,
-}: {
+type TerminalPaneProps = {
   termKey: string;
   content: string;
   interactive: boolean;
   dark: boolean;
   sessionId?: string;
   peerId?: string;
-}) {
-  return (
-    <div
-      key={termKey}
-      className="xterm-host"
-      ref={(el) => {
-        if (!el) return;
-        const h = createTerminal(el, {
-          content,
-          interactive,
-          dark,
-          onData: LAB_SERVICE_MODE && sessionId && peerId ? (data) => { void sendServiceTerminalInput(sessionId, data, peerId); } : undefined,
-          onResize: LAB_SERVICE_MODE && sessionId && peerId ? (cols, rows) => { void resizeServiceTerminal(sessionId, cols, rows, peerId); } : undefined,
-        });
-        return () => h.dispose();
-      }}
-    />
-  );
+};
+
+class TerminalPane extends PureComponent<TerminalPaneProps> {
+  private el: HTMLDivElement | null = null;
+  private handle: ReturnType<typeof createTerminal> | null = null;
+
+  private setElement = (el: HTMLDivElement | null) => {
+    if (this.el === el) return;
+    if (this.handle) {
+      this.handle.dispose();
+      this.handle = null;
+    }
+    this.el = el;
+    if (el) this.handle = createTerminal(el, this.options());
+  };
+
+  componentDidUpdate(prev: TerminalPaneProps) {
+    if (prev.termKey !== this.props.termKey) {
+      if (this.handle) {
+        this.handle.dispose();
+        this.handle = null;
+      }
+      if (this.el) this.handle = createTerminal(this.el, this.options());
+      return;
+    }
+    this.handle?.update(this.options());
+  }
+
+  componentWillUnmount() {
+    this.handle?.dispose();
+    this.handle = null;
+  }
+
+  private handleData = (data: string) => {
+    const { sessionId, peerId } = this.props;
+    if (LAB_SERVICE_MODE && sessionId && peerId) void sendServiceTerminalInput(sessionId, data, peerId);
+  };
+
+  private handleResize = (cols: number, rows: number) => {
+    const { sessionId, peerId } = this.props;
+    if (LAB_SERVICE_MODE && sessionId && peerId) void resizeServiceTerminal(sessionId, cols, rows, peerId);
+  };
+
+  private options() {
+    const { content, interactive, dark, sessionId, peerId } = this.props;
+    return {
+      content,
+      interactive,
+      dark,
+      onData: LAB_SERVICE_MODE && sessionId && peerId ? this.handleData : undefined,
+      onResize: LAB_SERVICE_MODE && sessionId && peerId ? this.handleResize : undefined,
+    };
+  }
+
+  render() {
+    return <div className="xterm-host" ref={this.setElement} />;
+  }
 }
 
 export default function SessionsView() {
@@ -438,7 +476,7 @@ export default function SessionsView() {
               )}
 
               <TerminalPane
-                termKey={`${current.id}::${activeTarget.repoPath}::${output.length}`}
+                termKey={`${current.id}::${activeTarget.repoPath}`}
                 content={output}
                 interactive={!!current.interactive}
                 dark={theme === 'dark'}
