@@ -1,4 +1,5 @@
 import { defaultServiceClient, type ServiceClient } from './client.ts';
+import { LAB_HUB_ROUTE } from '../dataMode';
 
 export async function runServiceCommand(
   argv: string[],
@@ -6,7 +7,10 @@ export async function runServiceCommand(
   peerId: string,
   client: ServiceClient = defaultServiceClient,
 ): Promise<string> {
-  const response = await client.request('cmd.run', { argv, repos, peerId });
+  const payload = { argv, repos, peerId };
+  const response = LAB_HUB_ROUTE
+    ? await client.routeRequest(peerId, 'cmd.run', payload)
+    : await client.request('cmd.run', payload);
   const sessionId = response.payload.sessionId;
   if (typeof sessionId !== 'string') throw new Error('cmd.run response missing sessionId');
   return sessionId;

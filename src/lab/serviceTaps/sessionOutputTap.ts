@@ -1,10 +1,12 @@
 import { createAsyncStreamMultiTap, type Tap } from '@owebeeone/grip-react';
 import {
   SELECTED_SESSION,
+  SELECTED_PEER_ID,
   SELECTED_TARGET,
   SESSION_DIAGNOSTICS,
   SESSION_OUTPUT,
 } from '../grips';
+import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import { parseDiagnostics } from '../sessionOutputTap';
@@ -22,16 +24,19 @@ type SessionOutputOuts = {
 export function createServiceSessionOutputTap(client: ServiceClient = defaultServiceClient): Tap {
   return createAsyncStreamMultiTap<SessionOutputOuts, ServiceStreamEvent>({
     provides: [SESSION_OUTPUT, SESSION_DIAGNOSTICS],
-    homeParamGrips: [SELECTED_SESSION, SELECTED_TARGET],
+    homeParamGrips: [SELECTED_PEER_ID, SELECTED_SESSION, SELECTED_TARGET],
     requestKeyOf: (params) => {
       const sessionId = params.getHomeParam(SELECTED_SESSION);
       if (!sessionId) return undefined;
       const repoPath = params.getHomeParam(SELECTED_TARGET) ?? '';
-      return `session.output|${sessionId}|${repoPath}`;
+      const peerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
+      return `session.output|${peerId}|${sessionId}|${repoPath}`;
     },
     subscribe: (params, signal) => {
+      const peerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
       const sessionId = params.getHomeParam(SELECTED_SESSION) ?? '';
       const repoPath = params.getHomeParam(SELECTED_TARGET) ?? '';
+      if (LAB_HUB_ROUTE) return client.routeSubscribe(peerId, 'session.output.subscribe', { sessionId, repoPath }, signal);
       return client.subscribe('session.output.subscribe', { sessionId, repoPath }, signal);
     },
     mapEvent: (_params, event) => {
