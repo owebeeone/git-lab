@@ -41,6 +41,9 @@ Deliverables:
   `@owebeeone/grip-react`, or pin both packages locally.
 - Bump `grip-lab` to the released or locally pinned `@owebeeone/grip-react`.
 - Update parent workspace submodule pins when local checkout references matter.
+- Confirm `grip-lab` can import the keyed context helpers from
+  `@owebeeone/grip-react`: `useKeyedChildContext` and
+  `useKeyedMatchingContext`.
 - Update `GLIntegrationPlan.md` so it describes the one-shot vs stream tap
   split, not a blanket `createAsyncMultiTap` rule for every non-trivial tap.
 - Mark the stream update mechanism open decision in `GLIntegrationPlan.md` as
@@ -59,6 +62,48 @@ Exit:
   lifecycles.
 - `import { createAsyncStreamMultiTap } from "@owebeeone/grip-react"` works in
   `grip-lab`.
+- keyed context helper imports from `@owebeeone/grip-react` work in
+  `grip-lab`.
+
+## Keyed Context Rules
+
+Use the new get-or-create context APIs for repeated panes, columns, and
+service-mode context subgraphs. Do not create service-mode child contexts with
+component-local `useMemo(() => parent.createChild(), ...)` or equivalent ad hoc
+context construction.
+
+Rules:
+
+- Use `useKeyedChildContext(key, ...)` for simple isolated per-pane state, such
+  as a selected file, selected session, or per-pane input atom.
+- Use `useKeyedMatchingContext(key, { init })` when a pane installs local
+  matcher bindings, such as service-vs-mock provider selection or peer/file
+  stream provider selection.
+- Keys are stable UI identity strings supplied by the caller, for example
+  `files:left`, `files:right`, `session:<sessionId>`, or `diff:left`.
+- Init lambdas may create the context subgraph and install matcher bindings for
+  that keyed context. They must not depend on render-varying values; per-pane
+  runtime values belong in atom taps inside the keyed context.
+- Prefer stable named init functions declared outside the rendering component,
+  or otherwise memoized, when passing `init` to `useKeyedChildContext(...)` or
+  `useKeyedMatchingContext(...)`. The core get-or-create API prevents duplicate
+  initialization for an existing key, but stable init functions keep React
+  dependencies quiet and make context setup auditable.
+- Keep mock-mode context construction stable until the service-mode replacement
+  for that surface is in place; do not break the current functional mock while
+  introducing keyed service contexts.
+- The same pattern must remain portable to `grip-py`: service/demo Python
+  contexts should use `get_or_create_child_context(...)` and
+  `get_or_create_matching_context(...)` when mirroring repeated-pane behavior.
+
+Verification:
+
+- source scan for service-mode UI code finds no ad hoc `createChild()` wrapped
+  in `useMemo` for repeated panes.
+- two same-type panes using the same parent but different keys do not share
+  local atom state or stream lifecycle.
+- rerendering a pane with the same key does not reinstall matcher bindings or
+  restart streams unless its request grips changed.
 
 ## Tap Primitive Rules
 
@@ -103,6 +148,8 @@ Deliverables:
 - `registerLabMockTaps()`.
 - `registerLabServiceTaps()` stub.
 - `VITE_GL_DATA=mock|service` bootstrap switch.
+- identify the repeated UI panes that will require keyed contexts and document
+  their stable keys in the integration checklist.
 - `vitest` or the chosen unit-test harness for `src/lab/serviceClient/**`.
 - `test:unit` script if `npm test` remains reserved for existing project checks.
 - Mock mode remains the default.
@@ -259,7 +306,9 @@ Deliverables:
   `src/lab/serviceClient/filedelta/index.ts`; package wiring is via `file:`
   dependency or an explicit path alias, not scattered relative imports.
 - `FILE_WINDOW`, `FILE_WINDOW_TAP`, `FILE_STREAM_STATUS`, `FILE_LINE_INDEX`.
-- per-column window tracking in file viewer.
+- per-column window tracking in file viewer uses
+  `useKeyedMatchingContext(...)` or `useKeyedChildContext(...)` with stable
+  pane keys instead of `useMemo(() => createChild())`.
 - TypeScript filedelta reassembler integrated into the tap.
 
 Rules:
@@ -277,6 +326,8 @@ Verification:
 - browser file tap consumes generated filedelta fixtures.
 - malformed hash closes stream and exposes `FILE_STREAM_STATUS.error`.
 - two editor columns viewing the same file maintain independent windows.
+- rerendering either editor column with the same pane key does not recreate its
+  context or resubscribe the file stream.
 - scroll changes `FILE_WINDOW` and sends `file.window.update`.
 - manual local file edit updates content.
 - mock diff/file consumers are moved toward grip-fed file data where practical,
@@ -310,6 +361,8 @@ Deliverables:
 - service `sessionsTap.ts`.
 - service `sessionOutputTap.ts`.
 - service `terminalTap.ts` for interactive PTY output, input, resize, and close.
+- session detail/terminal panes use keyed contexts for per-pane selected
+  session, terminal size, input focus state, and output stream lifecycle.
 - command helper bridge used by `SessionsView` in service mode.
 - shared diagnostics parser utility.
 
@@ -324,6 +377,8 @@ Verification:
 - session taps map snapshots/deltas/output append.
 - terminal tap opens, streams output, sends input, resizes, closes, and cleans up
   when listeners are gone.
+- switching between two session panes does not leak terminal/session atom state
+  across panes.
 - mock session run behavior still works in mock mode.
 - source scan confirms `SessionsView` no longer imports `fakeData` for service
   mode data paths.
@@ -356,6 +411,8 @@ Deliverables:
 - `SERVICE_CONNECTION` rendered consistently from `serviceStateTap.ts`.
 - service-mode manual script covering `griplab client` plus
   `VITE_GL_DATA=service npm run dev`.
+- service-mode repeated panes use keyed contexts consistently for file,
+  session, terminal, diff, and any peer-scoped pane state.
 - render coalescing or burst-delta debounce only if profiling shows a real
   problem.
 
@@ -364,6 +421,9 @@ Verification:
 - local app usable in `VITE_GL_DATA=service`.
 - service restart reconnects and resubscribes.
 - multiple editor columns do not corrupt each other.
+- source scan confirms service-mode repeated panes use
+  `useKeyedChildContext`/`useKeyedMatchingContext` rather than local
+  `useMemo(createChild)` patterns.
 - workspace, explorer, file viewer, and sessions no longer require mock data in
   service mode.
 - source scan confirms core local service views have no unguarded `fakeData`
@@ -496,6 +556,8 @@ Deliverables:
 - remote `cmd.run`.
 - remote session output subscription.
 - service-backed `DiffViewerView` data path.
+- diff left/right sides use independent keyed contexts so file stream windows,
+  peer/ref selections, decode status, and stream errors are isolated.
 - `DiffViewerView` no longer imports static file content for service mode.
 
 Rules:
