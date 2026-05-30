@@ -540,9 +540,14 @@ Exit criteria:
 Goal:
 
 - Enable the collaborative cross-machine behavior.
+- Build this as relay first, then routed feature slices. The hub relay contract
+  must be proven before workspace, file, diff, or command behavior is layered on
+  top.
 
 Deliverables:
 
+- generic routed request and subscription relay
+- route validation and errors for unknown/offline peers and target failures
 - cross-peer workspace status
 - cross-peer file window streams
 - client-derived diff from two file streams
@@ -551,6 +556,7 @@ Deliverables:
 
 Verification:
 
+- client A can route a request and a subscription to client B through the hub
 - two peers with same repo identity show status differences
 - file viewer can switch peers
 - diff view compares two peers/refs

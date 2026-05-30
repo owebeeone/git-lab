@@ -595,25 +595,127 @@ Exit:
 
 - Chat panel uses hub-backed messages and links in service mode.
 
-## Combined Step 10: Cross-Peer File, Diff, Workspace, Commands
+## Combined Step 10A: Hub Relay Contract
 
 Backend scope:
 
-- Services Phase 12: cross-peer workspace, file, diff, command.
+- First slice of Services Phase 12: generic hub request/stream relay.
 
 Frontend scope:
 
-- diff view service integration.
-- cross-peer service tap hardening.
+- No UI view replacement yet. This step proves the transport contract that later
+  cross-peer taps will use.
 
 Deliverables:
 
-- cross-peer workspace status.
-- cross-peer file window streams.
-- client-derived diff from two `file.subscribe` streams.
-- remote `cmd.run`.
-- remote session output subscription.
+- hub registry stores each peer's active websocket connection.
+- caller can send a routed request with `targetPeerId`.
+- hub forwards the request to the target peer and returns the target response to
+  the caller.
+- caller can open a routed subscription stream.
+- hub maps caller stream ids to target stream ids and relays stream events.
+- route validation and errors: unknown peer, offline peer, bad target response,
+  target error, and target timeout.
+- request/stream correlation stays internal to the hub; callers and targets do
+  not share message ids or stream ids directly.
+
+Rules:
+
+- Do not add feature-specific routing branches for files, workspace, sessions,
+  or commands in this step. The output is a reusable relay seam.
+- Routed requests must preserve the original service method name as the target
+  method unless the relay explicitly documents an envelope wrapper.
+- Stream relay must preserve target event ordering per routed stream.
+
+Verification:
+
+- two local clients register to one hub.
+- client A can route a request to client B and receive B's response.
+- client A can route a subscription to client B and receive B's stream events.
+- disconnecting B closes or errors A's routed streams.
+- route errors are structured service errors, not dropped messages.
+
+Exit:
+
+- cross-peer features have one tested relay contract to build on.
+
+## Combined Step 10B: Cross-Peer Workspace Status
+
+Backend scope:
+
+- Apply the hub relay to `workspace.status.subscribe`, `workspace.status.refresh`,
+  and `deps.get`.
+
+Frontend scope:
+
+- Cross-peer workspace/dependency service tap hardening.
+
+Deliverables:
+
+- service workspace/deps taps include selected peer routing when connected
+  through the hub.
+- selected local peer can still use the direct local client path.
+- `WorkspaceStatusView` and graph data show the selected peer's workspace.
+
+Verification:
+
+- two local clients with different fixture repos show different routed workspace
+  status through the hub.
+- dependency graph requests route to the selected peer.
+- switching peers does not leak stale workspace/dependency data.
+
+Exit:
+
+- status and graph views can inspect a non-local peer through the hub.
+
+## Combined Step 10C: Cross-Peer File Windows
+
+Backend scope:
+
+- Apply the hub relay to `file.subscribe`, `file.window.update`, and file stream
+  events.
+
+Frontend scope:
+
+- Cross-peer file viewer service tap hardening.
+
+Deliverables:
+
+- routed file window subscription.
+- routed window grow/shrink updates.
+- routed file stream errors and resets.
+- file viewer switches selected peers and receives that peer's file window.
+
+Rules:
+
+- File request keys include peer id, repo/ref/file identity, and destination
+  context where needed.
+- Stream relay must not coalesce or reorder file deltas.
+
+Verification:
+
+- two peers with the same repo identity can show different file content.
+- local file edits on the target peer reach the caller as valid deltas/resets.
+- switching selected peers closes the old stream and opens the new routed stream.
+
+Exit:
+
+- file viewer can inspect a non-local peer through the hub.
+
+## Combined Step 10D: Service Diff View
+
+Backend scope:
+
+- No new backend protocol unless 10C exposes a gap.
+
+Frontend scope:
+
+- Diff view service integration.
+
+Deliverables:
+
 - service-backed `DiffViewerView` data path.
+- client-derived diff from two independent `file.subscribe` streams.
 - diff left/right sides use independent keyed contexts so file stream windows,
   peer/ref selections, decode status, and stream errors are isolated.
 - `DiffViewerView` no longer imports static file content for service mode.
@@ -627,15 +729,44 @@ Rules:
 
 Verification:
 
-- two peers with same repo identity show status differences.
-- file viewer can switch peers.
 - diff view compares two peers/refs.
-- remote command stores logs on executor.
-- hub reconnect reconciles running command state.
+- left/right stream errors are isolated.
+- source scan confirms service-mode diff path no longer depends on static file
+  content.
 
 Exit:
 
-- end-to-end two-peer collaborative workflow works.
+- service-mode diff works from routed file streams.
+
+## Combined Step 10E: Remote Commands And Sessions
+
+Backend scope:
+
+- Apply the hub relay to `cmd.run`, `sessions.subscribe`, and
+  `session.output.subscribe`.
+
+Frontend scope:
+
+- Cross-peer command/session service tap hardening.
+
+Deliverables:
+
+- remote `cmd.run`.
+- remote session output subscription.
+- command logs remain stored on the executor peer.
+- caller can observe running and completed remote sessions.
+- hub reconnect reconciles running command state.
+
+Verification:
+
+- remote command stores logs on executor.
+- caller receives routed session id and output.
+- reconnect preserves observable session state.
+
+Exit:
+
+- end-to-end two-peer collaborative workflow works for workspace, files, diff,
+  and commands.
 
 ## Combined Step 11: Hardening And Release Prep
 
