@@ -7,6 +7,8 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import json
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -166,12 +168,20 @@ class EphemeralBootstrapManager:
 
 
 class HubBootstrapWorker:
-    """Hub-side bootstrap coordinator for prepare-only remote client setup."""
+    """Hub-side bootstrap coordinator for remote client setup and start."""
 
-    def __init__(self, *, hub_host: str = "127.0.0.1", hub_port: int = 3140) -> None:
+    def __init__(
+        self,
+        *,
+        hub_host: str = "127.0.0.1",
+        hub_port: int = 3140,
+        log_root: Path | None = None,
+    ) -> None:
         self.hub_host = hub_host
         self.hub_port = hub_port
         self.results: dict[str, dict[str, object]] = {}
+        self.processes = EphemeralBootstrapManager()
+        self.log_root = log_root
 
     def prepare(self, payload: dict[str, Any]) -> dict[str, object]:
         result = prepare_remote_client(payload, hub_host=self.hub_host, hub_port=self.hub_port)
@@ -180,8 +190,52 @@ class HubBootstrapWorker:
             self.results[peer_id] = result
         return result
 
+    def bootstrap(self, payload: dict[str, Any]) -> dict[str, object]:
+        peer_id = str(payload.get("peerId", "")).strip() or "peer"
+        self._log(peer_id, {"event": "start", "payload": redacted_payload(payload)})
+        prepare = self.prepare(payload)
+        self._log(peer_id, {"event": "prepare", "result": prepare})
+        if not prepare.get("ok", False):
+            self.results[peer_id] = {
+                **prepare,
+                "status": "error",
+                "summary": str(prepare.get("error", "remote preparation failed")),
+            }
+            return self.results[peer_id]
+        forward = prepare.get("forward", {})
+        start_payload = {
+            **payload,
+            "localPort": int(forward.get("localPeerPort", payload.get("localPort", 0))),
+            "remotePort": int(forward.get("remoteClientPort", payload.get("remotePort", 3141))),
+            "remoteHubPort": int(forward.get("remoteHubPort", payload.get("remoteHubPort", 43140))),
+            "hubHost": self.hub_host,
+            "hubPort": self.hub_port,
+            "remoteCommand": str(payload.get("remoteCommand", default_remote_client_command())),
+        }
+        start = self.processes.bootstrap(start_payload)
+        self._log(peer_id, {"event": "start-result", "result": start})
+        self.results[peer_id] = {
+            **prepare,
+            "start": start,
+            "status": "starting" if start.get("ok", False) else "error",
+            "summary": "Remote client start issued" if start.get("ok", False) else str(start.get("error", "remote start failed")),
+        }
+        return self.results[peer_id]
+
     def health(self, peer_id: str) -> dict[str, object] | None:
         return self.results.get(peer_id)
+
+    def close(self) -> None:
+        self.processes.close()
+
+    def _log(self, peer_id: str, event: dict[str, object]) -> None:
+        if self.log_root is None:
+            return
+        self.log_root.mkdir(parents=True, exist_ok=True)
+        path = self.log_root / f"{peer_id}.log"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": int(time.time() * 1000), **event}, sort_keys=True))
+            f.write("\n")
 
 
 def parse_ssh_target(value: str) -> SshTarget:
@@ -533,7 +587,7 @@ def allocate_local_port() -> int:
 
 
 def default_remote_client_command() -> str:
-    return "griplab client --config .grip-lab/client.json"
+    return "griplab client --config ~/.griplab/client.json"
 
 
 def normalize_os(value: str) -> str:
@@ -585,3 +639,11 @@ def _run_scp(payload: dict[str, Any], source: Path, destination: str, *, timeout
     if result.returncode != 0:
         raise subprocess.SubprocessError(result.stderr.strip() or result.stdout.strip() or f"scp exited {result.returncode}")
     return result
+
+
+def redacted_payload(payload: dict[str, Any]) -> dict[str, object]:
+    redacted = dict(payload)
+    for key in ("identityFile", "knownHostsFile"):
+        if key in redacted:
+            redacted[key] = "<set>"
+    return redacted

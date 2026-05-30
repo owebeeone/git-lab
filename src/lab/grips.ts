@@ -5,6 +5,7 @@ import type {
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
   CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
   RepoStatus, DependencyEdge, WorkspaceTreeEntry, LineWindow, FileStreamStatus,
+  PeerHealthDialog,
 } from './types';
 import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
@@ -106,6 +107,8 @@ export const COLLAB_EDIT = defineGrip<CollabEdit | null>('Lab.CollabEdit', null)
 export const COLLAB_EDIT_TAP = defineGrip<AtomTapHandle<CollabEdit | null>>('Lab.CollabEdit.Tap');
 export const AVATAR_EDIT = defineGrip<string | null>('Lab.AvatarEdit', null);
 export const AVATAR_EDIT_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.AvatarEdit.Tap');
+export const PEER_HEALTH_DIALOG = defineGrip<PeerHealthDialog | null>('Lab.PeerHealthDialog', null);
+export const PEER_HEALTH_DIALOG_TAP = defineGrip<AtomTapHandle<PeerHealthDialog | null>>('Lab.PeerHealthDialog.Tap');
 
 // Workspace graph nodes (published by the GraphSim tap engine)
 export const WORKSPACE_REPOS = defineGrip<RepoStatus[]>('Lab.WorkspaceRepos', []);

@@ -54,6 +54,7 @@ from griplab_service.protocol import (
     envelope_from_json,
     envelope_to_json,
 )
+from griplab_service.ssh_bootstrap import HubBootstrapWorker
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
 REGISTRY_KEY = web.AppKey("registry", Any)
@@ -133,6 +134,7 @@ class HubServer:
             sock_host, sock_port = sockets[0].getsockname()[:2]
             self._host = str(sock_host)
             self._port = int(sock_port)
+        app[REGISTRY_KEY].start_bootstrap(self._host, self._port)
 
     async def _cleanup_async(self) -> None:
         if self._runner is not None:
@@ -144,9 +146,14 @@ def create_app(config: ServiceConfig) -> web.Application:
     app[CONFIG_KEY] = config
     app[REGISTRY_KEY] = PeerRegistry(config)
     app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
+    app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/ws", handle_ws)
     return app
+
+
+async def cleanup_app(app: web.Application) -> None:
+    await app[REGISTRY_KEY].close_bootstrap()
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -547,6 +554,9 @@ class PeerRegistry:
         self.routed_streams_by_caller: dict[str, RoutedStream] = {}
         self.diff_sources_by_target_stream: dict[str, tuple[HubDiffStream, str]] = {}
         self.tunnels: dict[str, PeerTunnel] = {}
+        self.bootstrap_worker: HubBootstrapWorker | None = None
+        self.bootstrap_tasks: dict[str, asyncio.Task[None]] = {}
+        self.bootstrap_states: dict[str, dict[str, object]] = {}
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer = connected_presence(payload)
@@ -571,6 +581,92 @@ class PeerRegistry:
             remote_hub_port=remote_hub_port,
             remote_client_port=remote_client_port,
         )
+
+    def start_bootstrap(self, hub_host: str, hub_port: int) -> None:
+        if self.bootstrap_worker is not None:
+            return
+        log_root = (self.config.path.parent if self.config.path is not None else self.config.workspace.root) / "logs" / "bootstrap"
+        self.bootstrap_worker = HubBootstrapWorker(hub_host=hub_host, hub_port=hub_port, log_root=log_root)
+        for collaborator in self.collaborators.values():
+            self.reconcile_collaborator(collaborator.peer_id)
+
+    async def close_bootstrap(self) -> None:
+        for task in list(self.bootstrap_tasks.values()):
+            task.cancel()
+        for task in list(self.bootstrap_tasks.values()):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        self.bootstrap_tasks.clear()
+        if self.bootstrap_worker is not None:
+            await asyncio.to_thread(self.bootstrap_worker.close)
+        self.bootstrap_worker = None
+
+    def reconcile_collaborator(self, peer_id: str) -> None:
+        if self.bootstrap_worker is None:
+            return
+        if peer_id in self.peers and self.peers[peer_id].get("online") is True:
+            return
+        current = self.bootstrap_tasks.get(peer_id)
+        if current is not None and not current.done():
+            return
+        collaborator = self.collaborators.get(peer_id)
+        if collaborator is None:
+            return
+        self.bootstrap_states[peer_id] = {
+            "status": "starting",
+            "summary": "Bootstrap started",
+            "updatedAt": int(time.time() * 1000),
+            "checks": [{"id": "bootstrap", "status": "pending", "summary": "Bootstrap is running"}],
+            "logPath": str(self.bootstrap_worker.log_root / f"{peer_id}.log") if self.bootstrap_worker.log_root is not None else None,
+        }
+        self.publish()
+        self.bootstrap_tasks[peer_id] = asyncio.create_task(self._run_bootstrap(collaborator))
+
+    async def _run_bootstrap(self, collaborator: CollaboratorRecord) -> None:
+        assert self.bootstrap_worker is not None
+        payload = collaborator.to_json()
+        try:
+            result = await asyncio.to_thread(self.bootstrap_worker.bootstrap, payload)
+        except Exception as exc:
+            result = {"ok": False, "peerId": collaborator.peer_id, "status": "error", "summary": str(exc)}
+        start = result.get("start", {})
+        if isinstance(start, dict) and start.get("ok", False):
+            self.register_tunnel(
+                collaborator.peer_id,
+                local_peer_port=int(start.get("localPort", 0)),
+                remote_hub_port=int(start.get("remoteHubPort", 0)),
+                remote_client_port=int(start.get("remotePort", 0)),
+            )
+        self.bootstrap_states[collaborator.peer_id] = self._bootstrap_state_from_result(collaborator.peer_id, result)
+        self.publish()
+
+    def _bootstrap_state_from_result(self, peer_id: str, result: dict[str, object]) -> dict[str, object]:
+        status = str(result.get("status", "starting" if result.get("ok", False) else "error"))
+        summary = str(result.get("summary", "Bootstrap is running" if status == "starting" else "Bootstrap failed"))
+        log_path = None
+        if self.bootstrap_worker is not None and self.bootstrap_worker.log_root is not None:
+            log_path = str(self.bootstrap_worker.log_root / f"{peer_id}.log")
+        checks = [{"id": "bootstrap", "status": "pending" if status == "starting" else "error", "summary": summary}]
+        diagnostics = result.get("diagnostics", {})
+        if isinstance(diagnostics, dict):
+            for name in ("python", "uv", "git", "node", "npm"):
+                value = diagnostics.get(name, {})
+                if isinstance(value, dict):
+                    checks.append({
+                        "id": name,
+                        "status": "ok" if value.get("ok") else "error",
+                        "summary": str(value.get("summary", "")),
+                    })
+        return {
+            "status": status,
+            "summary": summary,
+            "updatedAt": int(time.time() * 1000),
+            "checks": checks,
+            "logPath": log_path,
+            "result": result,
+        }
 
     def heartbeat(self, payload: dict[str, Any]) -> None:
         peer_id = str(payload.get("peerId", ""))
@@ -603,6 +699,15 @@ class PeerRegistry:
         merged = {self.config.self_peer_id: dict(self.self_peer)}
         for collaborator in self.collaborators.values():
             merged[collaborator.peer_id] = configured_presence(collaborator)
+        for peer_id, state in self.bootstrap_states.items():
+            if peer_id not in merged:
+                continue
+            merged[peer_id] = {
+                **merged[peer_id],
+                "status": state["status"],
+                "summary": state["summary"],
+                "online": False,
+            }
         for peer_id, peer in self.peers.items():
             merged[peer_id] = dict(peer)
         return sorted(merged.values(), key=lambda item: str(item["id"]))
@@ -616,6 +721,8 @@ class PeerRegistry:
             raise ValueError("peer.health.get requires peerId")
         for peer in self.peers_json():
             if str(peer.get("id", "")) == peer_id:
+                if peer_id in self.bootstrap_states and peer.get("online") is not True:
+                    return {"health": self._bootstrap_health(peer_id, peer)}
                 return {"health": health_for_presence(peer)}
         return {
             "health": {
@@ -633,6 +740,7 @@ class PeerRegistry:
             item.peer_id: item
             for item in upsert_collaborator(self.collaborators_path, collaborator)
         }
+        self.reconcile_collaborator(collaborator.peer_id)
         self.publish()
         return collaborator.to_json()
 
@@ -642,8 +750,26 @@ class PeerRegistry:
             item.peer_id: item
             for item in remove_collaborator(self.collaborators_path, peer_id)
         }
+        task = self.bootstrap_tasks.pop(peer_id, None)
+        if task is not None:
+            task.cancel()
+        self.bootstrap_states.pop(peer_id, None)
         self.publish()
         return existed
+
+    def _bootstrap_health(self, peer_id: str, peer: dict[str, object]) -> dict[str, object]:
+        state = self.bootstrap_states[peer_id]
+        checks = list(state.get("checks", []))
+        log_path = state.get("logPath")
+        if log_path:
+            checks.append({"id": "log", "status": "ok", "summary": str(log_path)})
+        return {
+            "peerId": peer_id,
+            "status": str(state["status"]),
+            "summary": str(peer.get("summary", state.get("summary", ""))),
+            "checks": checks,
+            "updatedAt": int(state.get("updatedAt", int(time.time() * 1000))),
+        }
 
     def _load_collaborators(self) -> dict[str, CollaboratorRecord]:
         records = {item.peer_id: item for item in load_collaborators(self.collaborators_path)}

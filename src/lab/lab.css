@@ -446,6 +446,7 @@
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border); }
 .modal-head .ghost { font-size: 1.1rem; line-height: 1; padding: 0 8px; }
 .modal-body { padding: 14px 16px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+.health-text { width: 100%; min-height: 360px; resize: vertical; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.82rem; line-height: 1.45; }
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
 .repo-picker-head { display: flex; align-items: center; gap: 8px; }

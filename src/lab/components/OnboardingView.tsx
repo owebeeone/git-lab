@@ -2,6 +2,7 @@ import { useGrip } from '@owebeeone/grip-react';
 import {
   PEERS, PEERS_TAP, ONBOARDING_FORM, ONBOARDING_FORM_TAP,
   COLLAB_EDIT, COLLAB_EDIT_TAP, AVATAR_EDIT, AVATAR_EDIT_TAP,
+  PEER_HEALTH_DIALOG, PEER_HEALTH_DIALOG_TAP,
 } from '../grips';
 import type { CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
 import { STOCK_AVATARS, LETTER_COLORS } from '../avatars';
@@ -12,6 +13,7 @@ import {
   removeServiceCollaborator,
   upsertServiceCollaborator,
 } from '../serviceClient/collaborators';
+import type { PeerHealth } from '../serviceClient/protocol.ts';
 import { probeServicePeer } from '../serviceClient/probe';
 import Avatar from './Avatar';
 
@@ -45,6 +47,8 @@ export default function OnboardingView() {
   const avatarEdit = useGrip(AVATAR_EDIT) ?? null;
   const avatarEditTap = useGrip(AVATAR_EDIT_TAP);
   const avatarPeer = peers.find((p) => p.id === avatarEdit);
+  const healthDialog = useGrip(PEER_HEALTH_DIALOG) ?? null;
+  const healthDialogTap = useGrip(PEER_HEALTH_DIALOG_TAP);
 
   const updatePeer = (id: string, patch: Partial<Peer>) =>
     peersTap?.set(peers.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -101,7 +105,11 @@ export default function OnboardingView() {
   const remove = (id: string) => {
     if (LAB_SERVICE_MODE) {
       void removeServiceCollaborator(id).catch((error: unknown) => {
-        window.alert(error instanceof Error ? error.message : String(error));
+        healthDialogTap?.set({
+          peerId: id,
+          title: 'Remove collaborator failed',
+          text: error instanceof Error ? error.message : String(error),
+        });
       });
       return;
     }
@@ -114,10 +122,18 @@ export default function OnboardingView() {
     if (LAB_SERVICE_MODE) {
       void getServicePeerHealth(id)
         .then((health) => {
-          window.alert(`${target.name}: ${health.status}\n${health.summary}\n\n${health.checks.map((item) => `${item.id}: ${item.status} - ${item.summary}`).join('\n')}`);
+          healthDialogTap?.set({
+            peerId: id,
+            title: `${target.name} health`,
+            text: formatHealth(health),
+          });
         })
         .catch((error: unknown) => {
-          window.alert(error instanceof Error ? error.message : String(error));
+          healthDialogTap?.set({
+            peerId: id,
+            title: `${target.name} health`,
+            text: error instanceof Error ? error.message : String(error),
+          });
         });
       return;
     }
@@ -233,6 +249,24 @@ export default function OnboardingView() {
         </div>
       )}
 
+      {healthDialog && (
+        <div className="modal-backdrop" onClick={() => healthDialogTap?.set(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <strong>{healthDialog.title}</strong>
+              <button className="ghost" onClick={() => healthDialogTap?.set(null)} title="Close">×</button>
+            </div>
+            <div className="modal-body">
+              <textarea className="health-text" readOnly value={healthDialog.text} />
+            </div>
+            <div className="modal-foot">
+              <button className="ghost" onClick={() => void navigator.clipboard?.writeText(healthDialog.text)}>Copy</button>
+              <button className="primary" onClick={() => healthDialogTap?.set(null)}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="add-peer">
         <h3>Add collaborator</h3>
         <div className="form-row">
@@ -269,4 +303,16 @@ export default function OnboardingView() {
       </div>
     </section>
   );
+}
+
+function formatHealth(health: PeerHealth): string {
+  return [
+    `peerId: ${health.peerId}`,
+    `status: ${health.status}`,
+    `summary: ${health.summary}`,
+    `updatedAt: ${new Date(health.updatedAt).toISOString()}`,
+    '',
+    'checks:',
+    ...health.checks.map((item) => `- ${item.id}: ${item.status} - ${item.summary}`),
+  ].join('\n');
 }

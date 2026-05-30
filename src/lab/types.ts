@@ -23,6 +23,12 @@ export type Avatar = { kind: 'stock'; id: string } | { kind: 'letter'; color: st
 // Which collaborator field is being inline-edited.
 export interface CollabEdit { peerId: string; field: 'name' | 'sshAddress' | 'location' }
 
+export interface PeerHealthDialog {
+  peerId: string;
+  title: string;
+  text: string;
+}
+
 export interface Peer {
   id: string;
   name: string;

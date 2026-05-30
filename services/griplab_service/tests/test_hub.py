@@ -120,7 +120,7 @@ def test_hub_presence_loads_configured_collaborators(tmp_path: Path) -> None:
                     peers = snapshot["payload"]["payload"]["peers"]
                     assert [peer["id"] for peer in peers] == ["hub", "weftpi"]
                     configured = peers[1]
-                    assert configured["status"] == "configured"
+                    assert configured["status"] in {"starting", "error"}
                     assert configured["online"] is False
                     assert configured["sshAddress"] == "gianni@example.invalid"
         finally:
@@ -160,7 +160,8 @@ def test_hub_peer_health_and_collaborator_mutation(tmp_path: Path) -> None:
                     })
                     health = await ws.receive_json(timeout=2)
                     assert health["payload"]["health"]["peerId"] == "alice"
-                    assert health["payload"]["health"]["status"] == "configured"
+                    assert health["payload"]["health"]["status"] in {"starting", "error"}
+                    assert any(check["id"] == "log" for check in health["payload"]["health"]["checks"])
 
                     await ws.send_json({
                         "messageId": "m000003",

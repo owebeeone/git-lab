@@ -29,6 +29,7 @@ import {
   ONBOARDING_FORM, ONBOARDING_FORM_TAP,
   COLLAB_EDIT, COLLAB_EDIT_TAP,
   AVATAR_EDIT, AVATAR_EDIT_TAP,
+  PEER_HEALTH_DIALOG, PEER_HEALTH_DIALOG_TAP,
   SESSIONS, SESSIONS_TAP,
   SELECTED_SESSION, SELECTED_SESSION_TAP,
   SESSION_SEARCH, SESSION_SEARCH_TAP,
@@ -83,6 +84,7 @@ export function registerLabUiTaps() {
   grok.registerTap(createAtomValueTap(ONBOARDING_FORM, { initial: ONBOARDING_FORM.defaultValue!, handleGrip: ONBOARDING_FORM_TAP }));
   grok.registerTap(createAtomValueTap(COLLAB_EDIT, { initial: COLLAB_EDIT.defaultValue ?? null, handleGrip: COLLAB_EDIT_TAP }));
   grok.registerTap(createAtomValueTap(AVATAR_EDIT, { initial: AVATAR_EDIT.defaultValue ?? null, handleGrip: AVATAR_EDIT_TAP }));
+  grok.registerTap(createAtomValueTap(PEER_HEALTH_DIALOG, { initial: PEER_HEALTH_DIALOG.defaultValue ?? null, handleGrip: PEER_HEALTH_DIALOG_TAP }));
   grok.registerTap(createAtomValueTap(SESSIONS, { initial: SESSIONS.defaultValue!, handleGrip: SESSIONS_TAP }));
   grok.registerTap(createAtomValueTap(SELECTED_SESSION, { initial: SELECTED_SESSION.defaultValue ?? null, handleGrip: SELECTED_SESSION_TAP }));
   grok.registerTap(createAtomValueTap(SESSION_SEARCH, { initial: SESSION_SEARCH.defaultValue!, handleGrip: SESSION_SEARCH_TAP }));
