@@ -7,6 +7,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from griplab_service.config import ServiceConfig
+from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
+from griplab_service.local_client.workspace import ChangedFile, RepoStatus, collect_workspace_status
 from griplab_service.probe import build_probe
 
 
@@ -50,6 +52,14 @@ class LocalClientServer:
                 if self.path == "/probe":
                     self._write_json(build_probe(config))
                     return
+                if self.path == "/workspace/status":
+                    self._write_json({
+                        "repos": [repo_status_to_json(repo) for repo in collect_workspace_status(config.workspace.root)],
+                    })
+                    return
+                if self.path == "/deps":
+                    self._write_json(dependency_graph_to_json(get_dependency_graph(config.workspace.root)))
+                    return
                 self.send_error(404, "not found")
 
             def log_message(self, _format: str, *_args: object) -> None:
@@ -64,3 +74,32 @@ class LocalClientServer:
                 self.wfile.write(body)
 
         return Handler
+
+
+def changed_file_to_json(changed: ChangedFile) -> dict[str, object]:
+    return {
+        "path": changed.path,
+        "change": changed.change,
+    }
+
+
+def repo_status_to_json(status: RepoStatus) -> dict[str, object]:
+    return {
+        "path": status.path,
+        "name": status.name,
+        "branch": status.branch,
+        "head": status.head,
+        "ahead": status.ahead,
+        "behind": status.behind,
+        "dirty": status.dirty,
+        "changedFiles": [changed_file_to_json(changed) for changed in status.changed_files],
+        **({"error": status.error} if status.error else {}),
+    }
+
+
+def dependency_graph_to_json(graph: DependencyGraph) -> dict[str, object]:
+    return {
+        "repos": graph.repos,
+        "edges": [{"source": edge.source, "target": edge.target} for edge in graph.edges],
+        "errors": graph.errors,
+    }
