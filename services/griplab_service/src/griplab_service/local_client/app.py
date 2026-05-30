@@ -43,10 +43,11 @@ from griplab_service.protocol import (
     envelope_from_json,
     envelope_to_json,
 )
-from griplab_service.ssh_bootstrap import probe_peer
+from griplab_service.ssh_bootstrap import EphemeralBootstrapManager, probe_peer
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
 SESSIONS_KEY = web.AppKey("sessions", Any)
+BOOTSTRAPS_KEY = web.AppKey("bootstraps", Any)
 
 
 class LocalClientServer:
@@ -132,12 +133,18 @@ def create_app(config: ServiceConfig) -> web.Application:
     app = web.Application()
     app[CONFIG_KEY] = config
     app[SESSIONS_KEY] = SessionManager(config)
+    app[BOOTSTRAPS_KEY] = EphemeralBootstrapManager()
+    app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
     app.router.add_get("/workspace/status", handle_workspace_status)
     app.router.add_get("/deps", handle_deps)
     app.router.add_get("/ws", handle_ws)
     return app
+
+
+async def cleanup_app(app: web.Application) -> None:
+    app[BOOTSTRAPS_KEY].close()
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -164,7 +171,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     config = request.app[CONFIG_KEY]
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    connection = LocalClientConnection(config, request.app[SESSIONS_KEY], ws)
+    connection = LocalClientConnection(config, request.app[SESSIONS_KEY], request.app[BOOTSTRAPS_KEY], ws)
 
     try:
         async for msg in ws:
@@ -318,6 +325,22 @@ async def handle_protocol_message(
             payload=await asyncio.to_thread(probe_peer, envelope.payload),
         ))
         return
+    if envelope.method == "peer.bootstrap":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=await asyncio.to_thread(connection.bootstraps.bootstrap, envelope.payload),
+        ))
+        return
+    if envelope.method == "peer.bootstrap.stop":
+        bootstrap_id = str(envelope.payload.get("bootstrapId", ""))
+        stopped = await asyncio.to_thread(connection.bootstraps.stop, bootstrap_id)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"stopped": stopped},
+        ))
+        return
     if envelope.method == "term.open":
         session_id = await connection.session_manager.open_terminal(envelope.payload)
         await connection.send(ProtocolEnvelope.response(
@@ -409,9 +432,16 @@ class SessionOutputStream:
 
 
 class LocalClientConnection:
-    def __init__(self, config: ServiceConfig, session_manager: "SessionManager", ws: web.WebSocketResponse) -> None:
+    def __init__(
+        self,
+        config: ServiceConfig,
+        session_manager: "SessionManager",
+        bootstraps: EphemeralBootstrapManager,
+        ws: web.WebSocketResponse,
+    ) -> None:
         self.config = config
         self.session_manager = session_manager
+        self.bootstraps = bootstraps
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
