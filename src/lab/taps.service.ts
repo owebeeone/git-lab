@@ -1,8 +1,5 @@
-import { createFunctionTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
-import {
-  GRAPH_NODES,
-} from './grips';
+import { registerGraphSimTap } from './graphEngine';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
 import { createServiceChatMessagesTap } from './serviceTaps/chatMessagesTap';
 import { createServiceDiffContentTap } from './serviceTaps/diffContentTap';
@@ -16,10 +13,7 @@ import { createServiceStateTap } from './serviceStateTap';
 import { registerLabUiTaps } from './taps';
 
 function registerServicePlaceholderTaps() {
-  grok.registerTap(createFunctionTap({
-    provides: [GRAPH_NODES],
-    compute: () => new Map([[GRAPH_NODES, []]]),
-  }) as unknown as Tap);
+  registerGraphSimTap();
 }
 
 export function registerLabServiceTaps() {

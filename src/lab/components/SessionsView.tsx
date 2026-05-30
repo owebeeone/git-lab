@@ -64,13 +64,14 @@ function validateCommand(cmd: string, repoCount: number): { errors: string[]; wa
 }
 
 function TerminalPane({
-  termKey, content, interactive, dark, sessionId,
+  termKey, content, interactive, dark, sessionId, peerId,
 }: {
   termKey: string;
   content: string;
   interactive: boolean;
   dark: boolean;
   sessionId?: string;
+  peerId?: string;
 }) {
   return (
     <div
@@ -82,8 +83,8 @@ function TerminalPane({
           content,
           interactive,
           dark,
-          onData: LAB_SERVICE_MODE && sessionId ? (data) => { void sendServiceTerminalInput(sessionId, data); } : undefined,
-          onResize: LAB_SERVICE_MODE && sessionId ? (cols, rows) => { void resizeServiceTerminal(sessionId, cols, rows); } : undefined,
+          onData: LAB_SERVICE_MODE && sessionId && peerId ? (data) => { void sendServiceTerminalInput(sessionId, data, peerId); } : undefined,
+          onResize: LAB_SERVICE_MODE && sessionId && peerId ? (cols, rows) => { void resizeServiceTerminal(sessionId, cols, rows, peerId); } : undefined,
         });
         return () => h.dispose();
       }}
@@ -442,6 +443,7 @@ export default function SessionsView() {
                 interactive={!!current.interactive}
                 dark={theme === 'dark'}
                 sessionId={current.interactive ? current.id : undefined}
+                peerId={current.peerId}
               />
             </>
           ) : (

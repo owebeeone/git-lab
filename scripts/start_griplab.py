@@ -53,9 +53,10 @@ def main(argv: list[str] | None = None) -> int:
     sync_collaborators(config_root, [client_config, hub_config])
 
     ui_service_port = args.hub_port if args.with_hub else args.client_port
+    hub_route = args.with_hub
 
     if args.build or args.prod:
-        run_checked(["npm", "run", "build"], cwd=repo_root, env=ui_env(service=not args.mock, service_port=ui_service_port))
+        run_checked(["npm", "run", "build"], cwd=repo_root, env=ui_env(service=not args.mock, service_port=ui_service_port, hub_route=hub_route))
 
     processes: list[StartedProcess] = []
     stopping = False
@@ -79,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.no_service:
                 processes.append(start_service(repo_root, "client", client_config))
             if not args.no_ui:
-                processes.append(start_ui(repo_root, service=True, prod=args.prod, service_port=ui_service_port))
+                processes.append(start_ui(repo_root, service=True, prod=args.prod, service_port=ui_service_port, hub_route=hub_route))
         print_startup_summary(config_root, client_config, hub_config, processes)
         while processes and not stopping:
             for item in list(processes):
@@ -198,8 +199,8 @@ def start_service(repo_root: Path, command: str, config: Path) -> StartedProcess
     )
 
 
-def start_ui(repo_root: Path, *, service: bool, prod: bool, service_port: int) -> StartedProcess:
-    env = ui_env(service=service, service_port=service_port)
+def start_ui(repo_root: Path, *, service: bool, prod: bool, service_port: int, hub_route: bool = False) -> StartedProcess:
+    env = ui_env(service=service, service_port=service_port, hub_route=hub_route)
     if prod:
         cmd = ["npm", "run", "preview", "--", "--host", "127.0.0.1"]
         name = "vite preview"
@@ -209,11 +210,14 @@ def start_ui(repo_root: Path, *, service: bool, prod: bool, service_port: int) -
     return StartedProcess(name=name, process=subprocess.Popen(cmd, cwd=repo_root, env=env))
 
 
-def ui_env(*, service: bool, service_port: int) -> dict[str, str]:
+def ui_env(*, service: bool, service_port: int, hub_route: bool = False) -> dict[str, str]:
     env = os.environ.copy()
     if service:
         env["VITE_GL_DATA"] = "service"
         env["VITE_GL_SERVICE_URL"] = f"ws://127.0.0.1:{service_port}/ws"
+        if hub_route:
+            env["VITE_GL_HUB_ROUTE"] = "1"
+            env["VITE_GL_HUB_PRESENCE"] = "1"
     else:
         env["VITE_GL_DATA"] = "mock"
     return env
