@@ -8,11 +8,13 @@ copied to Mac, Windows/WSL, and Raspberry Pi test machines without packaging.
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import json
 import os
 import platform
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -192,15 +194,26 @@ def build_parser() -> argparse.ArgumentParser:
     image_delete = image_subparsers.add_parser("delete", help="Delete a reusable base")
     image_delete.add_argument("name", help="Reusable base name")
 
+    create_parser = subparsers.add_parser("create", help="Create a machine from a profile")
+    create_parser.add_argument("--provider", help="Provider name override")
+    create_parser.add_argument("--profile", required=True, help="Profile name")
+    create_parser.add_argument("--name", required=True, help="Machine name")
+
+    destroy_parser = subparsers.add_parser("destroy", help="Destroy a machine")
+    destroy_parser.add_argument("name", help="Machine name")
+
+    info_parser = subparsers.add_parser("info", help="Show machine details")
+    info_parser.add_argument("name", help="Machine name")
+
+    exec_parser = subparsers.add_parser("exec", help="Run a command inside a machine")
+    exec_parser.add_argument("name", help="Machine name")
+    exec_parser.add_argument("exec_command", nargs=argparse.REMAINDER, help="Command to run")
+
     for command, help_text in (
-        ("create", "Create a machine from a profile"),
         ("start", "Start a machine"),
         ("stop", "Stop a machine"),
         ("restart", "Restart a machine"),
-        ("destroy", "Destroy a machine"),
         ("list", "List known machines"),
-        ("info", "Show machine details"),
-        ("exec", "Run a command inside a machine"),
         ("shell", "Open an interactive shell"),
         ("ssh-config", "Render optional SSH include config"),
         ("sync", "Reconcile local state with provider reality"),
@@ -607,6 +620,113 @@ def run_image_delete(args: argparse.Namespace) -> int:
     return 0
 
 
+def state_machines(state: dict[str, object]) -> dict[str, object]:
+    machines = state.setdefault("machines", {})
+    if not isinstance(machines, dict):
+        raise StateError("state field 'machines' must be an object")
+    return machines
+
+
+def run_create(args: argparse.Namespace) -> int:
+    config = read_project_config(Path(args.project_root))
+    profile = find_profile(config, args.profile)
+    provider = choose_provider(config, args.provider)
+    if provider != "native-host":
+        print(f"provider not implemented for create: {provider}")
+        return 2
+
+    inputs = resolved_profile_inputs(config, profile, provider)
+    store = state_store_from_args(args)
+    state = store.read()
+    machines = state_machines(state)
+    if args.name in machines:
+        print(f"machine already exists: {args.name}")
+        return 2
+
+    machines[args.name] = {
+        "provider": "native-host",
+        "provider_id": f"native-host:{args.name}",
+        "profile": args.profile,
+        "image_alias": inputs["image_alias"],
+        "resolved_image": inputs["resolved_image"],
+        "network_alias": inputs["network_alias"],
+        "resolved_network": inputs["resolved_network"],
+        "state": "registered",
+        "owner": getpass.getuser(),
+        "host_system": platform.system().lower(),
+        "host_machine": platform.machine(),
+        "created_at": utc_now(),
+        "last_seen_at": utc_now(),
+    }
+    store.write(state)
+    print(f"created machine {args.name} (native-host)")
+    return 0
+
+
+def run_list(args: argparse.Namespace) -> int:
+    state = state_store_from_args(args).read()
+    machines = state.get("machines", {})
+    if not isinstance(machines, dict):
+        raise StateError("state field 'machines' must be an object")
+    for name, machine in sorted(machines.items()):
+        if isinstance(machine, dict):
+            provider = machine.get("provider", "unknown")
+            status = machine.get("state", "unknown")
+            profile = machine.get("profile", "unknown")
+            print(f"{name}: {provider} profile={profile} state={status}")
+    return 0
+
+
+def run_info(args: argparse.Namespace) -> int:
+    machine = require_machine(state_store_from_args(args).read(), args.name)
+    print(json.dumps(machine, indent=2, sort_keys=True))
+    return 0
+
+
+def run_destroy(args: argparse.Namespace) -> int:
+    store = state_store_from_args(args)
+    state = store.read()
+    machines = state_machines(state)
+    machine = machines.get(args.name)
+    if not isinstance(machine, dict):
+        print(f"machine not found: {args.name}")
+        return 2
+    if machine.get("provider") != "native-host":
+        print(f"provider not implemented for destroy: {machine.get('provider')}")
+        return 2
+    del machines[args.name]
+    store.write(state)
+    print(f"destroyed machine {args.name}")
+    return 0
+
+
+def require_machine(state: dict[str, object], name: str) -> dict[str, object]:
+    machines = state.get("machines", {})
+    if not isinstance(machines, dict):
+        raise StateError("state field 'machines' must be an object")
+    machine = machines.get(name)
+    if not isinstance(machine, dict):
+        raise StateError(f"machine not found: {name}")
+    return machine
+
+
+def run_exec(args: argparse.Namespace) -> int:
+    command = list(args.exec_command)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("exec command required")
+        return 2
+
+    machine = require_machine(state_store_from_args(args).read(), args.name)
+    if machine.get("provider") != "native-host":
+        print(f"provider not implemented for exec: {machine.get('provider')}")
+        return 2
+
+    result = subprocess.run(command, check=False)
+    return int(result.returncode)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -624,6 +744,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_aliases(Path(args.project_root))
     if args.command == "image":
         return run_image(args)
+    if args.command == "create":
+        return run_create(args)
+    if args.command == "list":
+        return run_list(args)
+    if args.command == "info":
+        return run_info(args)
+    if args.command == "destroy":
+        return run_destroy(args)
+    if args.command == "exec":
+        return run_exec(args)
     if args.command is None:
         parser.print_help()
         return 0

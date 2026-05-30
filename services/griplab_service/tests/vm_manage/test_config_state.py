@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -163,3 +164,100 @@ tools = ["python", "uv"]
     assert "dev-base: orbstack profile=dev" in captured.out
     assert "deleted base dev-base" in captured.out
     assert state_after_build["bases"]["dev-base"]["resolved_image"] == "ubuntu:24.04"
+
+
+def test_native_host_create_info_list_destroy(tmp_path, capsys) -> None:
+    config_dir = tmp_path / "vm_manage"
+    config_dir.mkdir()
+    (config_dir / "glvm.toml").write_text(
+        """
+[[profiles]]
+name = "pi"
+image = "ubuntu-lts"
+network = "none"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+
+    create_exit = main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--state-file",
+            str(state_file),
+            "create",
+            "--provider",
+            "native-host",
+            "--profile",
+            "pi",
+            "--name",
+            "rpi",
+        ]
+    )
+    list_exit = main(["--state-file", str(state_file), "list"])
+    info_exit = main(["--state-file", str(state_file), "info", "rpi"])
+    destroy_exit = main(["--state-file", str(state_file), "destroy", "rpi"])
+
+    captured = capsys.readouterr()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+
+    assert create_exit == 0
+    assert list_exit == 0
+    assert info_exit == 0
+    assert destroy_exit == 0
+    assert "created machine rpi (native-host)" in captured.out
+    assert "rpi: native-host profile=pi state=registered" in captured.out
+    assert '"provider": "native-host"' in captured.out
+    assert "destroyed machine rpi" in captured.out
+    assert state["machines"] == {}
+
+
+def test_native_host_exec_runs_command(tmp_path, capfd) -> None:
+    config_dir = tmp_path / "vm_manage"
+    config_dir.mkdir()
+    (config_dir / "glvm.toml").write_text(
+        """
+[[profiles]]
+name = "local"
+image = "ubuntu-lts"
+network = "none"
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+    main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--state-file",
+            str(state_file),
+            "create",
+            "--provider",
+            "native-host",
+            "--profile",
+            "local",
+            "--name",
+            "local",
+        ]
+    )
+
+    exit_code = main(
+        [
+            "--state-file",
+            str(state_file),
+            "exec",
+            "local",
+            "--",
+            sys.executable,
+            "-c",
+            "print('native-ok')",
+        ]
+    )
+
+    captured = capfd.readouterr()
+
+    assert exit_code == 0
+    assert "native-ok" in captured.out
