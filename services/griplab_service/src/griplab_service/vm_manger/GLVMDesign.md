@@ -190,6 +190,7 @@ Common flow:
 ```bash
 griplab-vm init
 griplab-vm doctor
+griplab-vm image build --profile dev --name dev-base
 griplab-vm create --profile dev --name alice-dev
 griplab-vm start alice-dev
 griplab-vm exec alice-dev -- uv run pytest
@@ -212,7 +213,7 @@ Provider preference order can be:
 
 1. Project default in `vm_manage/glvm.toml`.
 2. User default in local `griplab-vm` state.
-3. Auto-detected best provider for the host.
+3. Auto-detected best provider for the host. On macOS, prefer OrbStack over Lima when both are installed unless the user or project overrides it.
 4. QEMU fallback if configured and available.
 
 ## CLI Shape
@@ -223,6 +224,10 @@ Core commands:
 - `doctor`: report provider availability, daemon readiness, VM support, disk space, SSH usability, and host privilege risks.
 - `providers`: list provider adapters and their status.
 - `profiles`: list project VM profiles.
+- `aliases`: list resolved OS, network, and provider aliases.
+- `image build`: build or refresh a reusable base image/machine for a profile.
+- `image list`: list reusable bases known to local state.
+- `image delete`: remove a reusable base owned by `griplab-vm`.
 - `create`: create a VM from a profile.
 - `start`: start a VM.
 - `stop`: stop a VM.
@@ -252,7 +257,9 @@ default_provider = "auto"
 
 [[profiles]]
 name = "dev"
-image = "ubuntu:24.04"
+image = "ubuntu-lts"
+network = "none"
+base = "dev-base"
 cpus = 4
 memory = "8G"
 disk = "40G"
@@ -262,7 +269,9 @@ roles = ["developer", "agent-runner"]
 
 [[profiles]]
 name = "audit"
-image = "ubuntu:24.04"
+image = "ubuntu-lts"
+network = "none"
+base = "audit-base"
 cpus = 2
 memory = "4G"
 disk = "20G"
@@ -272,6 +281,144 @@ roles = ["reviewer"]
 ```
 
 Roles are labels for humans and test automation in v1. They do not grant permissions by themselves. Permissions come from explicit mount, network, and credential policy.
+
+Aliases should be project-local and versionable. They let profiles use stable names while the exact resolved value can change over time:
+
+```toml
+[os_aliases]
+ubuntu-lts = "ubuntu:24.04"
+ubuntu-stable = "ubuntu:24.04"
+ubuntu-next = "ubuntu:26.04"
+
+[network_aliases]
+none = { visibility = "localhost", outbound = false, inbound = false }
+full = { visibility = "provider-default", outbound = true, inbound = "localhost" }
+subnet-a = { visibility = "subnet-a", outbound = true, inbound = "subnet-a" }
+
+[network_aliases.providers.orbstack.none]
+mode = "best-effort-localhost"
+outbound = "deny-best-effort"
+inbound = "localhost"
+
+[network_aliases.providers.orbstack.full]
+mode = "provider-default"
+outbound = "allow"
+inbound = "localhost"
+
+[network_aliases.providers.orbstack.subnet-a]
+mode = "provider-default-with-service-filter"
+outbound = "allow"
+inbound = "localhost"
+allowed_cidrs = ["192.168.64.0/24"]
+
+[network_aliases.providers.lima.none]
+mode = "best-effort-localhost"
+outbound = "deny-best-effort"
+inbound = "localhost"
+
+[network_aliases.providers.lima.full]
+mode = "user-v2-default"
+outbound = "allow"
+inbound = "localhost"
+
+[network_aliases.providers.lima.subnet-a]
+mode = "user-v2-default-with-service-filter"
+outbound = "allow"
+inbound = "localhost"
+allowed_cidrs = ["192.168.105.0/24"]
+
+[network_aliases.providers.wsl2.none]
+mode = "best-effort-localhost"
+outbound = "deny-best-effort"
+inbound = "localhost"
+
+[network_aliases.providers.wsl2.full]
+mode = "wsl-default-nat"
+outbound = "allow"
+inbound = "localhost"
+
+[network_aliases.providers.wsl2.subnet-a]
+mode = "wsl-default-nat-with-service-filter"
+outbound = "allow"
+inbound = "localhost"
+allowed_cidrs = ["172.16.0.0/12"]
+
+[network_aliases.providers.native_host.none]
+mode = "host-configured"
+outbound = "host-configured"
+inbound = "localhost"
+
+[network_aliases.providers.native_host.full]
+mode = "host-configured"
+outbound = "host-configured"
+inbound = "host-configured"
+
+[network_aliases.providers.native_host.subnet-a]
+mode = "host-configured-with-service-filter"
+outbound = "host-configured"
+inbound = "host-configured"
+allowed_cidrs = ["192.168.0.0/16"]
+
+[network_aliases.providers.multipass.none]
+mode = "best-effort-localhost"
+outbound = "deny-best-effort"
+inbound = "localhost"
+
+[network_aliases.providers.multipass.full]
+mode = "provider-default-nat"
+outbound = "allow"
+inbound = "localhost"
+
+[network_aliases.providers.multipass.subnet-a]
+mode = "provider-default-nat-with-service-filter"
+outbound = "allow"
+inbound = "localhost"
+allowed_cidrs = ["10.0.0.0/8"]
+
+[network_aliases.providers.qemu.none]
+mode = "user-network"
+outbound = "deny-best-effort"
+inbound = "localhost"
+
+[network_aliases.providers.qemu.full]
+mode = "user-network"
+outbound = "allow"
+inbound = "localhost"
+
+[network_aliases.providers.qemu.subnet-a]
+mode = "user-network-with-service-filter"
+outbound = "allow"
+inbound = "localhost"
+allowed_cidrs = ["10.0.2.0/24"]
+
+[[profiles]]
+name = "dev"
+image = "ubuntu-lts"
+network = "none"
+base = "dev-base"
+```
+
+When a machine is created, the local state records the exact resolved OS image, network policy, and base image used. That means alias definitions can evolve without rewriting every profile or losing reproducibility for existing machines.
+
+Alias definitions can start in `vm_manage/glvm.toml`. If they get large or provider-specific, split them into named files:
+
+```text
+vm_manage/aliases/os.toml
+vm_manage/aliases/network.toml
+vm_manage/aliases/providers/orbstack.toml
+vm_manage/aliases/providers/lima.toml
+vm_manage/aliases/providers/wsl2.toml
+```
+
+The portable alias names should stay stable. Provider-specific files describe how a provider lowers those aliases to its own flags, templates, firewall controls, or best-effort behavior.
+
+Network aliases are a map from a stable name to detailed settings, optionally with provider-specific overrides. V1 should make a best guess for each provider and report when enforcement is best-effort. The initial aliases should be:
+
+- `none`: localhost-only service exposure, no intentional external network access.
+- `full`: provider default outbound access and localhost inbound service exposure.
+- `subnet-a`: access limited to a named subnet where the provider can enforce it, otherwise a diagnostic that the alias is unsupported or best-effort.
+
+These defaults are intentionally configurable. `allowed_cidrs`, `mode`, `outbound`, and `inbound` may be overridden in project config or provider-specific alias files after testing on real machines. If a provider cannot enforce part of an alias, it should still record the requested policy and print a diagnostic explaining the gap.
 
 Provider-specific tuning should be optional and isolated:
 
@@ -307,8 +454,8 @@ If a provider cannot resolve an image, `create` should fail before creating part
 
 WSL2 and native-host are slightly different:
 
-- WSL2 maps the profile image to an installed or importable distribution. `ubuntu:24.04` should resolve to a matching WSL distro if available, or to an imported root filesystem owned by `griplab-vm`.
-- Native-host does not create an image. It validates the host OS and architecture against the profile and then records that the current host satisfies the profile.
+- WSL2 maps the profile image to an installed or importable distribution. `ubuntu:24.04` should resolve to a matching WSL distro if available, or to an imported root filesystem owned by `griplab-vm`. V1 should allow both dedicated `griplab-vm` imported distros and attaching to an existing user-managed distro.
+- Native-host does not create an image. It validates the host OS and architecture against the profile and then records that the current host satisfies the profile. V1 should impose no minimum isolation beyond what the host is configured to provide.
 
 ## Local State
 
@@ -328,12 +475,34 @@ The state file should include:
   "schema_version": 1,
   "project_id": "grip-lab",
   "project_root_hint": "repo-root",
+  "bases": {
+    "dev-base": {
+      "provider": "orbstack",
+      "provider_id": "glvm-base-dev",
+      "profile": "dev",
+      "image_alias": "ubuntu-lts",
+      "resolved_image": "ubuntu:24.04",
+      "tools": ["python", "uv", "node"],
+      "fingerprint": "sha256:profile-and-provider-inputs",
+      "stale": false,
+      "created_at": "2026-05-30T00:00:00Z"
+    }
+  },
   "machines": {
     "alice-dev": {
-      "provider": "lima",
+      "provider": "orbstack",
       "provider_id": "glvm-alice-dev",
       "project_id": "grip-lab",
       "profile": "dev",
+      "base": "dev-base",
+      "image_alias": "ubuntu-lts",
+      "resolved_image": "ubuntu:24.04",
+      "network_alias": "none",
+      "resolved_network": {
+        "visibility": "localhost",
+        "outbound": false,
+        "inbound": false
+      },
       "state": "running",
       "owner": "alice",
       "services": {
@@ -394,7 +563,7 @@ class ProviderCapabilities:
     rootless_daily_ops: bool
 ```
 
-`griplab-vm` should use capabilities to decide what profile options are valid. For example, a profile requiring QCOW2 backing files should only use QEMU or a future image-builder provider. A profile requiring provider-managed file sharing can use Lima, Multipass, OrbStack, WSL2, or native-host depending on mount policy. A profile requiring a strict VM boundary should reject WSL2 and native-host.
+`griplab-vm` should use capabilities to decide what profile options are valid. For example, a profile requiring QCOW2 backing files should only use QEMU or another provider that exposes compatible reusable images. A profile requiring provider-managed file sharing can use Lima, Multipass, OrbStack, WSL2, or native-host depending on mount policy. A profile requiring a strict VM boundary should reject WSL2 and native-host.
 
 ## Provider Mapping
 
@@ -430,9 +599,36 @@ Adapters can lower this to:
 
 - cloud-init user data for Lima, Multipass, OrbStack, and QEMU;
 - provider exec commands for post-create repair;
-- future image-builder output when we want prebuilt bases.
+- provider-specific base image or template creation.
 
-Do not make every user build base images on day one. First version should create normal provider machines and provision them. Add cached/prebuilt base images later when provisioning time becomes painful.
+Base image building is a v1 feature. It is how `griplab-vm` avoids repeatedly installing the same tools into every VM. The command should support a reusable base per provider/profile:
+
+```bash
+griplab-vm image build --profile dev --name dev-base
+griplab-vm create --profile dev --base dev-base --name alice-dev
+```
+
+Provider implementations may differ:
+
+- QEMU can produce a reusable disk image or QCOW2 backing image.
+- Lima can create a prepared template or stopped base instance, then clone or recreate from the same generated config where cloning is unavailable.
+- Multipass can use snapshots or a stopped prepared instance when supported by the local driver.
+- OrbStack can use machine cloning if available, otherwise a prepared base machine plus replayable provisioning. If OrbStack cannot handle a requested base operation cleanly, `griplab-vm` should fall back to Lima when Lima is installed and the profile is compatible.
+- WSL2 can import a prepared root filesystem export.
+- Native-host does not build a base image; it records the host as satisfying a profile after validation and optional preparation.
+
+V1 does not need perfect provider parity. It needs a stable `image build/list/delete` interface, exact resolved metadata in local state, and clear diagnostics when a provider cannot produce a reusable base efficiently. If a provider supports snapshots or clones and the user requests that behavior, use it. Otherwise rebuild the base from the resolved profile and provisioning recipe.
+
+Base invalidation should be fingerprint-based. `image build` should compute a digest from:
+
+- the resolved OS image;
+- provider name and relevant provider settings;
+- CPU, memory, disk, mounts, and network aliases after resolution;
+- tool and package lists;
+- provisioning scripts or cloud-init content;
+- the `griplab-vm` base schema version.
+
+If the current fingerprint differs from the stored base fingerprint, mark the base stale. The recommended default is to rebuild into a new provider-owned base and then update local state after the build succeeds. Existing machines keep using the base they were created from unless the user explicitly recreates them.
 
 ## Sharing Model
 
@@ -458,6 +654,14 @@ Local only:
 
 This split lets collaborators use different providers. One person can use Lima, another can use OrbStack, and CI can use raw QEMU or Multipass while sharing the same `dev` profile.
 
+Export/import can mean three different things, so v1 should be precise:
+
+- **Project definition export/import:** share committed `vm_manage/` profiles and aliases. This is the v1 sharing path.
+- **Local inventory export/import:** move local machine records between hosts. This should not be a v1 default because provider IDs, ports, paths, and credentials are host-specific.
+- **Provider image export/import:** move actual base images or machine disks. This is useful later for expensive bases, but it should be provider-specific and explicit.
+
+For v1, prefer reproducible setup from shared profiles over moving local state between machines.
+
 ## Agent Model
 
 Agents should be launched into VMs through `griplab-vm`, not by giving each agent arbitrary host access.
@@ -472,20 +676,25 @@ An agent launch should specify:
 - lifetime or idle timeout;
 - output collection policy.
 
+V1 should support explicit credential injection per run. Credentials should not be baked into base images, committed project config, or long-lived local inventory. The default should still be no credentials unless the command or profile policy explicitly asks for them.
+
+V1 should reuse named project machines by default. Per-agent throwaway machines are useful later, but they add lifecycle cost, cleanup risk, and provider-specific behavior before the basic workflow is proven.
+
 Example:
 
 ```bash
 griplab-vm agent launch --profile audit --task "review parser changes" --mount workspace:read-only
 ```
 
-The VM boundary protects the host only if mounts and credentials are controlled. A read-write workspace mount means the agent can edit the checkout. A read-only workspace mount is safer for inspection and review. A no-mount mode is safest for untrusted tasks but requires explicit file transfer.
+The VM boundary protects the host only if mounts, credentials, and network access are controlled. A read-write workspace mount means the agent can edit the checkout. A read-only workspace mount is safer for inspection and review. A no-mount mode is safest for untrusted tasks but requires explicit file transfer.
 
 ## Privilege and Security
 
 The privilege policy should be simple:
 
 - `griplab-vm init` may explain that provider installation needs admin rights.
-- `griplab-vm init` may call a package manager only after an explicit user confirmation.
+- `griplab-vm init` may use a preconfigured install script where possible, after explicit user confirmation.
+- `griplab-vm init` may call a package manager only through that install path or after an explicit user confirmation.
 - Routine VM operations should not call host `sudo`.
 - If a provider requires a privileged daemon, `griplab-vm` should report that in `doctor` and avoid changing daemon permissions automatically.
 - `griplab-vm` should never blindly overwrite the user's SSH config. Prefer provider SSH commands or a dedicated include block that is opt-in and reversible.
@@ -521,7 +730,7 @@ visibility = "localhost"
 
 `griplab-vm` should track logical services separately from concrete ports. Concrete ports are local state because each collaborator's host may have different conflicts.
 
-For agents, default service visibility should be `localhost`. LAN or bridged networking should require explicit opt-in because it changes who can reach the VM.
+For agents, the default network alias should be `none`, meaning localhost-only service exposure and no intentional outbound access beyond what the provider cannot practically block. Broader network modes should be named aliases such as `full` or `subnet-a`, with definitions in project config and optional provider-specific lowering.
 
 ## Naming
 
@@ -621,7 +830,7 @@ Do not carry forward:
 - absolute paths in committed files;
 - QEMU-specific disk and process assumptions outside the QEMU adapter.
 
-The old `compile-base` concept should become a later image-building feature. V1 should create ordinary provider machines from profiles and use cloud-init or provider exec for provisioning.
+The old `compile-base` concept should become the v1 `image build` command, but with provider adapters instead of QEMU-specific assumptions. V1 should support reusable bases where the provider can do so cleanly and fall back to replayable provisioning where it cannot.
 
 ## First Implementation Slice
 
@@ -629,32 +838,30 @@ The old `compile-base` concept should become a later image-building feature. V1 
 2. Add a package using the canonical `vm_manager` name when practical, while keeping committed project config under `vm_manage/`.
 3. Implement config loading and local state.
 4. Implement `provider.detect()` and `doctor` for Lima, WSL2, native-host, Multipass, OrbStack, and QEMU.
-5. Implement `list providers`, `profiles`, and dry-run `create`.
-6. Implement Lima create/start/stop/exec first because it gives the Mac path a strong default and a good balance of control and provider-managed VM behavior.
-7. Implement WSL2 create/start/stop/exec so Windows has a solid v1 path.
-8. Implement native-host register/exec/health so Raspberry Pi Linux has a solid v1 path.
-9. Add Multipass create/start/stop/exec as the true-VM Windows option and Ubuntu-focused cross-platform option.
-10. Add OrbStack on macOS.
-11. Add raw QEMU only after cloud-init, SSH keys, port allocation, process management, and cleanup are designed as separate tested units.
+5. Implement `list providers`, `profiles`, `aliases`, and dry-run `create`.
+6. Implement alias resolution for OS images and network policies, and record exact resolved values in local state.
+7. Implement `image build/list/delete` as a provider interface before broad VM creation work.
+8. Implement base fingerprints, stale detection, and rebuild behavior.
+9. Implement preconfigured provider install scripts for supported hosts.
+10. Implement OrbStack create/start/stop/exec/image first on macOS because it is the preferred default when installed.
+11. Implement Lima create/start/stop/exec/image as the open macOS/Linux provider and fallback when OrbStack is absent or cannot handle a requested operation.
+12. Implement WSL2 create/start/stop/exec/image so Windows has a solid v1 path.
+13. Implement native-host register/exec/health so Raspberry Pi Linux has a solid v1 path.
+14. Add Multipass create/start/stop/exec/image as the true-VM Windows option and Ubuntu-focused cross-platform option.
+15. Add raw QEMU after cloud-init, SSH keys, port allocation, process management, cleanup, and reusable base images are designed as separate tested units.
 
 ## Future Extensions
 
 - Snapshot and clone support for providers that expose it.
-- Prebuilt base images for slow profiles.
 - Remote VM providers for lab machines or cloud instances.
 - A local dashboard showing machines, collaborators, agents, and logs.
 - Policy files for what agents may mount, execute, and access.
 - Workspace lease management so an agent can claim a VM for a bounded time.
 - Provider scorecards from real use: boot time, resource use, mount reliability, SSH reliability, and cleanup behavior.
 
-## Open Questions
+## Remaining Questions
 
-- Should the default provider on macOS be Lima or OrbStack when both are installed?
-- Should `griplab-vm` create per-agent throwaway VMs by default, or reuse named project VMs?
-- Should project profiles define exact OS versions, or allow provider defaults for easier maintenance?
-- How much network access should agents have by default?
-- Do collaborators need a way to export/import VM state, or only shared profiles and reproducible setup?
-- Should base image building become a separate `griplab-vm image` command later?
+No blocking design questions remain for v1. Network alias defaults are best guesses and should be adjusted through configuration after testing on the Mac, Windows/WSL, and Raspberry Pi Linux machines.
 
 ## References
 
