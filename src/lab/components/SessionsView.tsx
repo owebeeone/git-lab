@@ -196,26 +196,43 @@ export default function SessionsView() {
     runReposTap?.set(runRepos.includes(repoPath) ? runRepos.filter((r) => r !== repoPath) : [...runRepos, repoPath]);
   };
 
+  const showErrorSession = (peerId: string, argv: string[], message: string) => {
+    const ts = Date.now();
+    const session: CommandSession = {
+      id: `sess-error-${ts}`,
+      peerId,
+      argv,
+      startedAt: ts,
+      targets: [{ repoPath: '', exitCode: 127, durationMs: 0, output: `error: ${message}\n` }],
+    };
+    sessionsTap?.set([session, ...sessions]);
+    selectedTap?.set(session.id);
+    selectedTargetTap?.set('');
+  };
+
   const runCommand = () => {
     const cmd = draft.trim();
     const repos = runRepos.length ? runRepos : [''];
     const { errors } = validateCommand(cmd, runRepos.length);
     if (errors.length) return;
     if (LAB_SERVICE_MODE) {
-      void runServiceCommand(cmd.split(/\s+/), repos, targetPeer).then((sessionId) => {
-        const session: CommandSession = {
-          id: sessionId,
-          peerId: targetPeer,
-          argv: cmd.split(/\s+/),
-          startedAt: Date.now(),
-          targets: repos.map((repoPath) => ({ repoPath, exitCode: null, output: '' })),
-        };
-        sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
-        selectedTap?.set(sessionId);
-        selectedTargetTap?.set(repos[0] ?? '');
-        draftTap?.set('');
-        dialogTap?.set(false);
-      });
+      const argv = cmd.split(/\s+/);
+      void runServiceCommand(argv, repos, targetPeer)
+        .then((sessionId) => {
+          const session: CommandSession = {
+            id: sessionId,
+            peerId: targetPeer,
+            argv,
+            startedAt: Date.now(),
+            targets: repos.map((repoPath) => ({ repoPath, exitCode: null, output: '' })),
+          };
+          sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
+          selectedTap?.set(sessionId);
+          selectedTargetTap?.set(repos[0] ?? '');
+          draftTap?.set('');
+          dialogTap?.set(false);
+        })
+        .catch((error: unknown) => showErrorSession(targetPeer, argv, error instanceof Error ? error.message : String(error)));
       return;
     }
     const ts = Date.now();
@@ -235,19 +252,21 @@ export default function SessionsView() {
 
   const openTerminal = () => {
     if (LAB_SERVICE_MODE) {
-      void openServiceTerminal('', targetPeer).then((sessionId) => {
-        const session: CommandSession = {
-          id: sessionId,
-          peerId: targetPeer,
-          argv: ['terminal'],
-          startedAt: Date.now(),
-          interactive: true,
-          targets: [{ repoPath: '', exitCode: null, output: '' }],
-        };
-        sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
-        selectedTap?.set(sessionId);
-        selectedTargetTap?.set('');
-      });
+      void openServiceTerminal('', targetPeer)
+        .then((sessionId) => {
+          const session: CommandSession = {
+            id: sessionId,
+            peerId: targetPeer,
+            argv: ['terminal'],
+            startedAt: Date.now(),
+            interactive: true,
+            targets: [{ repoPath: '', exitCode: null, output: '' }],
+          };
+          sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
+          selectedTap?.set(sessionId);
+          selectedTargetTap?.set('');
+        })
+        .catch((error: unknown) => showErrorSession(targetPeer, ['terminal'], error instanceof Error ? error.message : String(error)));
       return;
     }
     const ts = Date.now();
@@ -340,6 +359,10 @@ export default function SessionsView() {
           ))}
         </div>
         <span className="spacer" />
+        <div className="session-peer-target">
+          <span className="field-label">Collaborator</span>
+          <PeerSelect />
+        </div>
         <button className="primary" onClick={() => dialogTap?.set(true)}>Run a command…</button>
         <button className="ghost" onClick={openTerminal}>▶ Terminal</button>
       </div>

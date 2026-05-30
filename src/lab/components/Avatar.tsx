@@ -1,11 +1,14 @@
+import { useGrip } from '@owebeeone/grip-react';
+import { PEER_AVATARS } from '../grips';
 import type { Peer } from '../types';
-import { stockById, deriveColor, letterOf } from '../avatars';
+import { stockById, deriveColor, letterOf, avatarForPeer } from '../avatars';
 
 // Small round avatar: a stock emoji image, a chosen letter color, or (default)
 // a Google-style letter avatar with a color derived from the name.
 export default function Avatar({ peer, size = 22 }: { peer?: Peer; size?: number }) {
+  const avatarOverrides = useGrip(PEER_AVATARS) ?? {};
   const name = peer?.name ?? '?';
-  const av = peer?.avatar;
+  const av = avatarForPeer(peer, avatarOverrides);
 
   if (av?.kind === 'stock') {
     const s = stockById(av.id);

@@ -1,6 +1,7 @@
 import json
 import asyncio
 import base64
+import queue
 from pathlib import Path
 from urllib.request import urlopen
 import subprocess
@@ -10,7 +11,8 @@ from aiohttp import ClientSession, WSCloseCode
 from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
-from griplab_service.local_client.app import FileWatchRegistry, SessionManager, parse_terminal_argv
+from griplab_service.local_client import app as local_app
+from griplab_service.local_client.app import FileWatchRegistry, SessionManager, command_line_for_platform, parse_terminal_argv
 from griplab_service.local_client.tree import TreeWatchRegistry, tree_snapshot_payload
 
 
@@ -804,6 +806,170 @@ def test_default_terminal_argv_requests_interactive_shell(monkeypatch) -> None:
 
     monkeypatch.setenv("SHELL", "/bin/sh")
     assert parse_terminal_argv({}) == ["/bin/sh", "-i"]
+
+
+def test_windows_command_line_uses_cmd_quoting() -> None:
+    assert command_line_for_platform(["echo"], "nt") == "echo"
+    assert command_line_for_platform(["python", "-c", "print('hello world')"], "nt") == 'python -c "print(\'hello world\')"'
+
+
+class FakeWinPtyProcess:
+    instances: list["FakeWinPtyProcess"] = []
+
+    def __init__(
+        self,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        dimensions: tuple[int, int] = (24, 80),
+    ) -> None:
+        self.argv = argv
+        self.cwd = cwd
+        self.env = env
+        self.dimensions = dimensions
+        self.writes: list[str] = []
+        self.exitstatus = 0
+        self._alive = True
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        if "/C" in argv:
+            self._queue.put("\x1b[cPTY-CMD:" + " ".join(argv))
+            self._alive = False
+            self._queue.put(None)
+        else:
+            self._queue.put("PROMPT>")
+        self.instances.append(self)
+
+    @classmethod
+    def spawn(
+        cls,
+        argv: list[str],
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        dimensions: tuple[int, int] = (24, 80),
+    ) -> "FakeWinPtyProcess":
+        return cls(argv, cwd=cwd, env=env, dimensions=dimensions)
+
+    def read(self, _size: int = 4096) -> str:
+        item = self._queue.get(timeout=1)
+        if item is None:
+            raise EOFError
+        return item
+
+    def write(self, data: str) -> None:
+        self.writes.append(data)
+        self._queue.put("ECHO:" + data)
+
+    def setwinsize(self, rows: int, cols: int) -> None:
+        self.dimensions = (rows, cols)
+
+    def isalive(self) -> bool:
+        return self._alive
+
+    def wait(self) -> int:
+        self._alive = False
+        return self.exitstatus
+
+    def terminate(self, _force: bool = False) -> None:
+        self._alive = False
+        self._queue.put(None)
+
+
+def test_windows_command_run_uses_conpty_backend(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        FakeWinPtyProcess.instances.clear()
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        monkeypatch.setattr(local_app.os, "name", "nt")
+        monkeypatch.setattr(local_app, "WinPtyProcess", FakeWinPtyProcess)
+        monkeypatch.setenv("COMSPEC", "cmd.exe")
+        manager = SessionManager(config)
+        session_id = await manager.run_command({"argv": ["echo", "from-pty"], "repos": [""], "peerId": "me"})
+        for _ in range(20):
+            target = manager.sessions[0].targets[0]
+            if target.exit_code is not None:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("fake winpty command did not finish")
+        assert manager.sessions[0].id == session_id
+        assert target.exit_code == 0
+        assert "PTY-CMD:cmd.exe /C echo from-pty" in target.output
+        assert FakeWinPtyProcess.instances[0].writes == ["\x1b[?1;2c"]
+        assert FakeWinPtyProcess.instances[0].dimensions == (30, 120)
+
+    asyncio.run(run())
+
+
+def test_windows_terminal_uses_conpty_backend(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        FakeWinPtyProcess.instances.clear()
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        monkeypatch.setattr(local_app.os, "name", "nt")
+        monkeypatch.setattr(local_app, "WinPtyProcess", FakeWinPtyProcess)
+        monkeypatch.setenv("COMSPEC", "cmd.exe")
+        manager = SessionManager(config)
+        session_id = await manager.open_terminal({"repoPath": "", "rows": 24, "cols": 80, "peerId": "me"})
+        for _ in range(20):
+            if "PROMPT>" in manager.sessions[0].targets[0].output:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("fake winpty terminal prompt was not read")
+        fake = FakeWinPtyProcess.instances[0]
+        assert manager.terminal_input({"sessionId": session_id, "data": "echo hi\r"})
+        for _ in range(20):
+            if "ECHO:echo hi" in manager.sessions[0].targets[0].output:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("fake winpty terminal input was not read")
+        assert fake.writes == ["echo hi\r"]
+        assert manager.terminal_resize({"sessionId": session_id, "rows": 40, "cols": 100})
+        assert fake.dimensions == (40, 100)
+        assert await manager.terminal_close({"sessionId": session_id})
+        assert manager.sessions[0].targets[0].exit_code == 0
+
+    asyncio.run(run())
+
+
+def test_terminal_open_without_posix_pty_returns_failed_session(tmp_path: Path, monkeypatch) -> None:
+    async def run() -> None:
+        monkeypatch.setattr(local_app, "pty", None)
+        monkeypatch.setattr(local_app, "fcntl", None)
+        monkeypatch.setattr(local_app, "termios", None)
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "term.open",
+                        "payload": {"repoPath": "", "rows": 24, "cols": 80, "peerId": "me"},
+                    })
+                    opened = await ws.receive_json(timeout=2)
+                    assert opened["kind"] == "response"
+                    session_id = opened["payload"]["sessionId"]
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "sessions.subscribe",
+                        "streamId": "sessions0001",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    restored = snapshot["payload"]["payload"]["sessions"][0]
+                    assert restored["id"] == session_id
+                    assert restored["targets"][0]["exitCode"] == 127
+                    assert "POSIX PTY" in restored["targets"][0]["output"]
+        finally:
+            server.stop()
+
+    asyncio.run(run())
 
 
 def test_stale_interactive_sessions_restore_as_detached(tmp_path: Path) -> None:

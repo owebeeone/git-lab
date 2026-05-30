@@ -59,6 +59,36 @@ def test_dependency_graph_reads_repo_definitions(tmp_path: Path) -> None:
     assert graph.errors == {}
 
 
+def test_dependency_graph_reads_package_json_dependencies(tmp_path: Path) -> None:
+    built = RepoDefinition(
+        react_repo("core"),
+        react_repo("react").dep("core"),
+        react_repo("demo").dep("react"),
+    ).build(tmp_path / "workspace")
+    remove_explicit_deps(built.workspace_root)
+
+    graph = get_dependency_graph(built.workspace_root)
+
+    assert {(edge.source, edge.target) for edge in graph.edges} == {
+        ("react", "core"),
+        ("demo", "react"),
+    }
+    assert graph.errors == {}
+
+
+def test_dependency_graph_reads_pyproject_dependencies(tmp_path: Path) -> None:
+    built = RepoDefinition(
+        pyproj_repo("py-core"),
+        pyproj_repo("py-app").dep("py-core"),
+    ).build(tmp_path / "workspace")
+    remove_explicit_deps(built.workspace_root)
+
+    graph = get_dependency_graph(built.workspace_root)
+
+    assert {(edge.source, edge.target) for edge in graph.edges} == {("py-app", "py-core")}
+    assert graph.errors == {}
+
+
 def test_dependency_graph_reports_unknown_dependency(tmp_path: Path) -> None:
     built = RepoDefinition(
         react_repo("app").dep("missing"),
@@ -68,3 +98,8 @@ def test_dependency_graph_reports_unknown_dependency(tmp_path: Path) -> None:
 
     assert graph.edges == []
     assert graph.errors == {"app": "unknown dependency: missing"}
+
+
+def remove_explicit_deps(workspace_root: Path) -> None:
+    for deps_file in workspace_root.glob("*/.grip-lab/deps.json"):
+        deps_file.unlink()

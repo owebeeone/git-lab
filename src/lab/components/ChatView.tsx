@@ -189,7 +189,8 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
               <div className="chat-links">
                 {m.links.map((l, i) => (
                   <button key={i} className={`link-chip ${l.kind}`} onClick={() => openLink(l)}>
-                    <span>{LINK_ICON[l.kind]}</span>{l.label}
+                    <span className="link-icon">{LINK_ICON[l.kind]}</span>
+                    <span className="link-label">{l.label}</span>
                   </button>
                 ))}
               </div>
@@ -199,17 +200,24 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
       </div>
 
       <div className="chat-palette">
-        <span className="muted">Drag to attach:</span>
-        {palette.map((l, i) => (
-          <span
-            key={i}
-            className={`link-chip ${l.kind}`}
-            draggable
-            onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify(l))}
-          >
-            <span>{LINK_ICON[l.kind]}</span>{l.label}
-          </span>
-        ))}
+        <div className="chat-palette-head">
+          <span className="muted">Drag to attach:</span>
+          <span className="muted">{palette.length} refs</span>
+        </div>
+        <div className="chat-palette-list">
+          {palette.map((l, i) => (
+            <span
+              key={i}
+              className={`link-chip ${l.kind}`}
+              draggable
+              title={l.label}
+              onDragStart={(e) => e.dataTransfer.setData('application/json', JSON.stringify(l))}
+            >
+              <span className="link-icon">{LINK_ICON[l.kind]}</span>
+              <span className="link-label">{l.label}</span>
+            </span>
+          ))}
+        </div>
       </div>
 
       <div className="composer-resize" onMouseDown={startResize} title="Drag to resize the message box">
@@ -228,7 +236,8 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
           <div className="pending-links">
             {pending.map((l, i) => (
               <span key={i} className={`link-chip ${l.kind}`}>
-                <span>{LINK_ICON[l.kind]}</span>{l.label}
+                <span className="link-icon">{LINK_ICON[l.kind]}</span>
+                <span className="link-label">{l.label}</span>
                 <button className="chip-x" onClick={() => pendingTap?.set(pending.filter((_, k) => k !== i))}>×</button>
               </span>
             ))}

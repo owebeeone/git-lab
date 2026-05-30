@@ -3,9 +3,10 @@ import {
   PEERS, PEERS_TAP, ONBOARDING_FORM, ONBOARDING_FORM_TAP,
   COLLAB_EDIT, COLLAB_EDIT_TAP, AVATAR_EDIT, AVATAR_EDIT_TAP,
   PEER_HEALTH_DIALOG, PEER_HEALTH_DIALOG_TAP,
+  PEER_AVATARS, PEER_AVATARS_TAP,
 } from '../grips';
-import type { CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
-import { STOCK_AVATARS, LETTER_COLORS } from '../avatars';
+import type { Avatar as PeerAvatar, CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
+import { STOCK_AVATARS, LETTER_COLORS, avatarForPeer } from '../avatars';
 import { LAB_SERVICE_MODE } from '../dataMode';
 import {
   getServicePeerHealth,
@@ -47,11 +48,19 @@ export default function OnboardingView() {
   const avatarEdit = useGrip(AVATAR_EDIT) ?? null;
   const avatarEditTap = useGrip(AVATAR_EDIT_TAP);
   const avatarPeer = peers.find((p) => p.id === avatarEdit);
+  const avatarOverrides = useGrip(PEER_AVATARS) ?? {};
+  const avatarOverridesTap = useGrip(PEER_AVATARS_TAP);
+  const selectedAvatar = avatarForPeer(avatarPeer, avatarOverrides);
   const healthDialog = useGrip(PEER_HEALTH_DIALOG) ?? null;
   const healthDialogTap = useGrip(PEER_HEALTH_DIALOG_TAP);
 
   const updatePeer = (id: string, patch: Partial<Peer>) =>
     peersTap?.set(peers.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+
+  const setPeerAvatar = (id: string, avatar: PeerAvatar | null) => {
+    avatarOverridesTap?.set({ ...avatarOverrides, [id]: avatar });
+    peersTap?.set(peers.map((p) => (p.id === id ? { ...p, avatar: avatar ?? undefined } : p)));
+  };
 
   // Connect/probe the connection string (synchronous in the mock).
   const connect = (address: string) => {
@@ -211,14 +220,14 @@ export default function OnboardingView() {
               <div className="field-label">Images</div>
               <div className="avatar-grid">
                 {STOCK_AVATARS.map((s) => {
-                  const sel = avatarPeer.avatar?.kind === 'stock' && avatarPeer.avatar.id === s.id;
+                  const sel = selectedAvatar?.kind === 'stock' && selectedAvatar.id === s.id;
                   return (
                     <button
                       key={s.id}
                       className={`avatar-pick${sel ? ' sel' : ''}`}
                       style={{ background: s.bg }}
                       title={s.id}
-                      onClick={() => updatePeer(avatarPeer.id, { avatar: { kind: 'stock', id: s.id } })}
+                      onClick={() => setPeerAvatar(avatarPeer.id, { kind: 'stock', id: s.id })}
                     >
                       {s.emoji}
                     </button>
@@ -228,21 +237,21 @@ export default function OnboardingView() {
               <div className="field-label">Letter color</div>
               <div className="color-row">
                 {LETTER_COLORS.map((c) => {
-                  const sel = avatarPeer.avatar?.kind === 'letter' && avatarPeer.avatar.color === c;
+                  const sel = selectedAvatar?.kind === 'letter' && selectedAvatar.color === c;
                   return (
                     <button
                       key={c}
                       className={`color-swatch${sel ? ' sel' : ''}`}
                       style={{ background: c }}
                       title={c}
-                      onClick={() => updatePeer(avatarPeer.id, { avatar: { kind: 'letter', color: c } })}
+                      onClick={() => setPeerAvatar(avatarPeer.id, { kind: 'letter', color: c })}
                     />
                   );
                 })}
               </div>
             </div>
             <div className="modal-foot">
-              <button className="ghost" onClick={() => updatePeer(avatarPeer.id, { avatar: undefined })}>Use default</button>
+              <button className="ghost" onClick={() => setPeerAvatar(avatarPeer.id, null)}>Use default</button>
               <button className="primary" onClick={() => avatarEditTap?.set(null)}>Done</button>
             </div>
           </div>
@@ -313,6 +322,17 @@ function formatHealth(health: PeerHealth): string {
     `updatedAt: ${new Date(health.updatedAt).toISOString()}`,
     '',
     'checks:',
-    ...health.checks.map((item) => `- ${item.id}: ${item.status} - ${item.summary}`),
+    ...health.checks.map(formatHealthCheck),
   ].join('\n');
+}
+
+function formatHealthCheck(item: PeerHealth['checks'][number]): string {
+  const summary = item.summary.trim();
+  const redundant = summary === `${item.id} found`
+    || summary === `${item.id} ok`
+    || summary === item.status
+    || summary.length === 0;
+  return redundant
+    ? `- ${item.id} ${item.status}`
+    : `- ${item.id} ${item.status} ${summary}`;
 }

@@ -18,6 +18,7 @@ export function createServicePeersTap(client: ServiceClient = defaultServiceClie
       return new Map([[PEERS, payload.peers as Peer[]]]);
     },
     getResetUpdates: () => new Map(),
+    initialState: [[PEERS, []]],
     retry: {
       initialDelayMs: 500,
       maxDelayMs: 5000,

@@ -16,11 +16,17 @@ from griplab_service.ssh_bootstrap import (
     prepare_remote_client,
     parse_ssh_target,
     remote_client_config_path,
+    remote_client_pid_file,
     remote_client_payload_dir,
+    remote_client_start_python_command,
     remote_config_dir,
+    remote_diagnostics_command,
     remote_log_dir,
+    remote_python_command,
     remote_start_command,
+    remote_stop_client_command,
     scp_base_command,
+    shell_fingerprint_command,
     ssh_base_command,
 )
 
@@ -42,9 +48,37 @@ def test_parse_ssh_target() -> None:
 
 
 def test_shell_fingerprint_classification() -> None:
+    assert "printf" not in shell_fingerprint_command()
     assert classify_shell_fingerprint("Linux: /bin/zsh | Win: %SHELL% / $env:SHELL") == "posix"
+    assert classify_shell_fingerprint("Linux:  | Win: %SHELL% / ") == "powershell"
     assert classify_shell_fingerprint("Linux: $SHELL | Win: %SHELL% / powershell-shell") == "powershell"
     assert classify_shell_fingerprint("Linux: $SHELL | Win: cmd-shell / $env:SHELL") == "cmd"
+
+
+def test_remote_diagnostics_command_uses_python_launcher() -> None:
+    command = remote_diagnostics_command("workspace-root", shell_kind="cmd")
+
+    assert command.startswith('python -c "import base64,sys;exec(base64.b64decode(sys.argv[1]))"')
+    assert "printf" not in command
+    assert "powershell" not in command
+    assert "workspace-root" not in command
+
+
+def test_remote_python_command_is_shell_neutral() -> None:
+    command = remote_python_command("py -3", "print('ok')", {"path": "workspace-root"})
+
+    assert command.startswith('py -3 -c "import base64,sys;exec(base64.b64decode(sys.argv[1]))"')
+    assert "workspace-root" not in command
+    assert "printf" not in command
+    assert "powershell" not in command
+
+
+def test_prepare_remote_client_reports_errors_in_error_field() -> None:
+    result = prepare_remote_client({"peerId": "bad", "sshAddress": "bad-address"})
+
+    assert result["ok"] is False
+    assert "error" in result
+    assert "clientPayload" not in result
 
 
 def test_tunnel_command_has_local_and_remote_forwards() -> None:
@@ -100,6 +134,26 @@ def test_remote_config_honors_explicit_config_dir() -> None:
     assert remote_client_config_path(payload) == "runtime/griplab/client.json"
 
 
+def test_remote_client_start_python_command_uses_pid_file() -> None:
+    payload = {"location": "workspace-root"}
+    command = remote_client_start_python_command(
+        python_command="python",
+        uv_command="uv",
+        location="workspace-root",
+        config_path=remote_client_config_path(payload),
+        payload_dir=remote_client_payload_dir(payload),
+        log_root=remote_log_dir(payload),
+        log_stdout=f"{remote_log_dir(payload)}/peer.out",
+        log_stderr=f"{remote_log_dir(payload)}/peer.err",
+        pid_file=remote_client_pid_file(payload),
+    )
+
+    assert command.startswith('python -c "import base64,sys;exec(base64.b64decode(sys.argv[1]))"')
+    assert "mkdir" not in command
+    assert "tail" not in command
+    assert "powershell" not in command
+
+
 def test_start_command_wraps_dual_forwards_and_logs() -> None:
     plan = ForwardPlan(
         peer_id="fixture",
@@ -137,6 +191,26 @@ def test_remote_start_command_handles_compound_commands() -> None:
     assert "exec cd" not in command
     assert "cd workspace/.griplab/client_payload && uv run" in command
     assert "> workspace/.griplab/logs/client.out" in command
+
+
+def test_remote_start_command_can_stop_existing_client() -> None:
+    stop = remote_stop_client_command("workspace/.griplab/client.json")
+    command = remote_start_command(
+        "workspace",
+        "cd workspace/.griplab/client_payload && uv run griplab client --config workspace/.griplab/client.json",
+        "workspace/.griplab/logs",
+        "workspace/.griplab/logs/client.out",
+        "workspace/.griplab/logs/client.err",
+        stop_existing=stop,
+    )
+
+    assert "ps" in command
+    assert "ppid" in command
+    assert "client_payload" in command
+    assert "ancestors" in command
+    assert "SIGTERM" in command
+    assert "workspace/.griplab/client.json" in command
+    assert command.index("SIGTERM") < command.index("uv run griplab client")
 
 
 def test_peer_probe_over_fixture_sshd(tmp_path) -> None:
@@ -198,7 +272,7 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
         diagnostics = diagnose_peer(payload)
         missing = [
             name
-            for name in ("python", "uv", "git", "node")
+            for name in ("python", "uv", "git", "node", "npm")
             if not diagnostics.get(name, {}).get("ok", False)  # type: ignore[union-attr]
         ]
         if missing:
@@ -244,7 +318,7 @@ def test_prepare_remote_client_creates_missing_workspace_config_dir(tmp_path) ->
         diagnostics = diagnose_peer(payload)
         missing = [
             name
-            for name in ("python", "uv", "git", "node")
+            for name in ("python", "uv", "git", "node", "npm")
             if not diagnostics.get(name, {}).get("ok", False)  # type: ignore[union-attr]
         ]
         if missing:
@@ -269,6 +343,7 @@ def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:
             service_root = tmp_path / "service"
             service_root.mkdir()
             remote_port = allocate_local_port()
+            remote_hub_port = allocate_local_port()
             config = load_config(write_config(service_root, status_poll_interval_ms=1000))
             server = LocalClientServer(config)
             server.start()
@@ -286,6 +361,7 @@ def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:
                                 "identityFile": str(peer.identity_file),
                                 "knownHostsFile": str(peer.known_hosts_file),
                                 "remotePort": remote_port,
+                                "remoteHubPort": remote_hub_port,
                                 "remoteLogDir": str(peer.workspace_root / ".remote-griplab" / "logs"),
                                 "remoteCommand": f"python3 -m http.server {remote_port} --bind 127.0.0.1",
                             },
@@ -295,7 +371,7 @@ def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:
                         payload = response["payload"]
                         assert payload["ok"] is True
                         assert payload["mode"] == "ephemeral"
-                        assert payload["remoteHubPort"] == 43140
+                        assert payload["remoteHubPort"] == remote_hub_port
                         assert payload["health"]["status"] == "ok"
                         body = await fetch_bootstrap_url(payload["localUrl"])
                         assert "Directory listing" in body

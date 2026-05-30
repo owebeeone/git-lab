@@ -22,20 +22,26 @@ function edgeNodeId(repoPath: string) {
   return repoPath || 'root';
 }
 
-function edgeColor(edgeId: string) {
-  return `url(#arrow-${edgeId})`;
+function svgIdPart(value: string) {
+  return value.replace(/[^A-Za-z0-9_-]/g, '_') || 'root';
+}
+
+function markerId(scope: string, edgeId: string) {
+  return `${scope}-arrow-${svgIdPart(edgeId)}`;
 }
 
 export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[]; peer?: Peer }) {
   const { openInFiles } = useEditor();
-  const nodes = useGrip(GRAPH_NODES) ?? [];
+  useGrip(GRAPH_NODES);
   const depEdges = useGrip(WORKSPACE_DEP_EDGES) ?? [];
 
   // Feed the latest repo set to the engine (idempotent; not React state).
   graphEngine.setInput(repos, depEdges, peer?.id ?? '');
 
+  const nodes = graphEngine.current();
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const orderedNodes = [...nodes].sort((a, b) => Number(a.expanded) - Number(b.expanded));
+  const markerScope = `graph-${svgIdPart(peer?.id ?? 'local')}`;
   // Dependency edges (source depends on target), arrow points to the dependency.
   const edges = depEdges
     .map((e, index) => {
@@ -49,6 +55,7 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
       const hot = s.expanded || t.expanded;
       return {
         id: `${source}->${target}-${index}`,
+        marker: markerId(markerScope, `${source}->${target}-${index}`),
         x1: si.x,
         y1: si.y,
         x2: ti.x,
@@ -57,7 +64,7 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
         hot,
       };
     })
-    .filter(Boolean) as { id: string; x1: number; y1: number; x2: number; y2: number; color: string; hot: boolean }[];
+    .filter(Boolean) as { id: string; marker: string; x1: number; y1: number; x2: number; y2: number; color: string; hot: boolean }[];
 
   const openInTab = (repoPath: string, path: string) => openInFiles(`${repoPath}::${path}`);
 
@@ -83,7 +90,7 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
           {edges.map((e) => (
             <marker
               key={e.id}
-              id={`arrow-${e.id}`}
+              id={e.marker}
               markerWidth="10"
               markerHeight="8"
               refX="9"
@@ -105,7 +112,7 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
                 y2={e.y2}
                 stroke={e.color}
                 strokeWidth={e.hot ? 2.8 : 1.8}
-                markerEnd={edgeColor(e.id)}
+                markerEnd={`url(#${e.marker})`}
                 opacity={e.hot ? 0.98 : 0.72}
               />
             </g>

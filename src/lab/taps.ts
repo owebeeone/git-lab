@@ -7,6 +7,7 @@ import {
   WORKSPACE_LAYOUT, WORKSPACE_LAYOUT_TAP,
   WORKSPACE_MENU, WORKSPACE_MENU_TAP,
   PEERS, PEERS_TAP,
+  PEER_AVATARS, PEER_AVATARS_TAP,
   SELECTED_PEER_ID, SELECTED_PEER_ID_TAP,
   SELECTED_FILE, SELECTED_FILE_TAP,
   EDITOR_GROUPS, EDITOR_GROUPS_TAP,
@@ -53,16 +54,24 @@ import { createMockDiffContentTap } from './serviceTaps/mockDiffContentTap';
 import { dependencyEdges, REPO_STATUS_BY_PEER, WORKSPACE_FILES } from './fakeData';
 import type { RepoStatus } from './types';
 
-// All mock state is held in simple settable atom taps. When the backend lands,
-// these get replaced by taps that subscribe to the delta protocol; the
-// component tree and grips stay the same.
-export function registerLabUiTaps() {
+type LabUiTapOptions = {
+  registerPeersAtom?: boolean;
+};
+
+// All mock state is held in simple settable atom taps. In service mode, backend
+// taps provide the live values for externally-owned grips such as PEERS.
+export function registerLabUiTaps(options: LabUiTapOptions = {}) {
+  const registerPeersAtom = options.registerPeersAtom ?? true;
+
   grok.registerTap(createAtomValueTap(CURRENT_VIEW, { initial: CURRENT_VIEW.defaultValue!, handleGrip: CURRENT_VIEW_TAP }));
   grok.registerTap(createAtomValueTap(THEME, { initial: THEME.defaultValue!, handleGrip: THEME_TAP }));
   grok.registerTap(createAtomValueTap(UI_SCALE, { initial: UI_SCALE.defaultValue!, handleGrip: UI_SCALE_TAP }));
   grok.registerTap(createAtomValueTap(WORKSPACE_LAYOUT, { initial: WORKSPACE_LAYOUT.defaultValue!, handleGrip: WORKSPACE_LAYOUT_TAP }));
   grok.registerTap(createAtomValueTap(WORKSPACE_MENU, { initial: WORKSPACE_MENU.defaultValue ?? null, handleGrip: WORKSPACE_MENU_TAP }));
-  grok.registerTap(createAtomValueTap(PEERS, { initial: PEERS.defaultValue!, handleGrip: PEERS_TAP }));
+  if (registerPeersAtom) {
+    grok.registerTap(createAtomValueTap(PEERS, { initial: PEERS.defaultValue!, handleGrip: PEERS_TAP }));
+  }
+  grok.registerTap(createAtomValueTap(PEER_AVATARS, { initial: PEER_AVATARS.defaultValue!, handleGrip: PEER_AVATARS_TAP }));
   grok.registerTap(createAtomValueTap(SELECTED_PEER_ID, { initial: SELECTED_PEER_ID.defaultValue!, handleGrip: SELECTED_PEER_ID_TAP }));
   grok.registerTap(createAtomValueTap(SELECTED_FILE, { initial: SELECTED_FILE.defaultValue ?? null, handleGrip: SELECTED_FILE_TAP }));
   grok.registerTap(createAtomValueTap(EDITOR_GROUPS, { initial: EDITOR_GROUPS.defaultValue!, handleGrip: EDITOR_GROUPS_TAP }));

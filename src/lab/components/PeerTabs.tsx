@@ -6,6 +6,10 @@ export default function PeerTabs() {
   const selected = useGrip(SELECTED_PEER_ID);
   const selectedTap = useGrip(SELECTED_PEER_ID_TAP);
 
+  if (peers.length === 0) {
+    return <div className="peer-tabs"><span className="muted">Loading collaborators...</span></div>;
+  }
+
   return (
     <div className="peer-tabs">
       {peers.map((p) => (

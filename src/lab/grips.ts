@@ -5,7 +5,7 @@ import type {
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
   CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
   RepoStatus, DependencyEdge, WorkspaceTreeEntry, LineWindow, FileStreamStatus,
-  PeerHealthDialog,
+  PeerHealthDialog, PeerAvatarOverrides,
 } from './types';
 import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
@@ -30,6 +30,8 @@ export const WORKSPACE_MENU_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.
 // Collaborators
 export const PEERS = defineGrip<Peer[]>('Lab.Peers', INITIAL_PEERS);
 export const PEERS_TAP = defineGrip<AtomTapHandle<Peer[]>>('Lab.Peers.Tap');
+export const PEER_AVATARS = defineGrip<PeerAvatarOverrides>('Lab.PeerAvatars', {});
+export const PEER_AVATARS_TAP = defineGrip<AtomTapHandle<PeerAvatarOverrides>>('Lab.PeerAvatars.Tap');
 
 // The peer whose workspace is currently focused (status / file / diff views)
 export const SELECTED_PEER_ID = defineGrip<string>('Lab.SelectedPeerId', SELF_ID);

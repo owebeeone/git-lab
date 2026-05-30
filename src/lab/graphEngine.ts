@@ -56,7 +56,11 @@ function build(repos: RepoStatus[], edges: DependencyEdge[]) {
       width: 170, height: 66, baseW: 170, baseH: 66, expW: 280, expH: 186,
     };
   });
-  links = edges;
+  links = edges.map((e) => ({
+    ...e,
+    source: e.source || 'root',
+    target: e.target || 'root',
+  }));
 }
 
 function isExpanded(id: string) {
@@ -172,6 +176,7 @@ export const graphEngine = {
     const key = `${scope}::${repoPart}::${edgePart}`;
     if (key !== repoKey) { repoKey = key; build(repos, edges); publishFn?.(snapshot()); wake(); }
   },
+  current() { return snapshot(); },
   attach(fn: (n: GraphRenderNode[]) => void) { publishFn = fn; fn(snapshot()); wake(); },
   detach() { publishFn = null; if (raf) cancelAnimationFrame(raf); running = false; },
   setHover(id: string | null) { if (hover !== id) { hover = id; wake(); } },

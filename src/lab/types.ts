@@ -20,6 +20,7 @@ export type PeerPresenceStatus = 'configured' | 'offline' | 'bootstrapping' | 's
 export interface StockAvatar { id: string; emoji: string; bg: string }
 // A peer's chosen avatar: a stock image or a Google-style colored letter.
 export type Avatar = { kind: 'stock'; id: string } | { kind: 'letter'; color: string };
+export type PeerAvatarOverrides = Record<string, Avatar | null>;
 
 // Which collaborator field is being inline-edited.
 export interface CollabEdit { peerId: string; field: 'name' | 'sshAddress' | 'location' }

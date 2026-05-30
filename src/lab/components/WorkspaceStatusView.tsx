@@ -8,6 +8,7 @@ import {
   WORKSPACE_MENU,
   WORKSPACE_MENU_TAP,
   WORKSPACE_REPOS,
+  WORKSPACE_DEP_EDGES,
 } from '../grips';
 import type { Peer, RepoStatus } from '../types';
 import { dragProps, fileLink } from '../dnd';
@@ -81,6 +82,7 @@ export default function WorkspaceStatusView() {
   const peers = useGrip(PEERS) ?? [];
   const peer = peers.find((p) => p.id === peerId);
   const repos = useGrip(WORKSPACE_REPOS) ?? [];
+  useGrip(WORKSPACE_DEP_EDGES);
   const layout = useGrip(WORKSPACE_LAYOUT) ?? 'tiles';
   const layoutTap = useGrip(WORKSPACE_LAYOUT_TAP);
 

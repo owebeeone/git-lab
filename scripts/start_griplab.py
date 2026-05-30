@@ -218,10 +218,10 @@ def start_service(repo_root: Path, command: str, config: Path) -> StartedProcess
 def start_ui(repo_root: Path, *, service: bool, prod: bool, service_port: int, hub_route: bool = False) -> StartedProcess:
     env = ui_env(service=service, service_port=service_port, hub_route=hub_route)
     if prod:
-        cmd = ["npm", "run", "preview", "--", "--host", "127.0.0.1"]
+        cmd = ["npm", "run", "preview", "--", "--host", "127.0.0.1", "--strictPort"]
         name = "vite preview"
     else:
-        cmd = ["npm", "run", "dev", "--", "--host", "127.0.0.1"]
+        cmd = ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--strictPort"]
         name = "vite dev"
     return StartedProcess(name=name, process=subprocess.Popen(cmd, cwd=repo_root, env=env))
 

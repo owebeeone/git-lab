@@ -1,4 +1,4 @@
-import type { StockAvatar } from './types';
+import type { Avatar, Peer, PeerAvatarOverrides, StockAvatar } from './types';
 
 // 20 stock avatars: an emoji on a colored circle (dependency-free, no binaries).
 export const STOCK_AVATARS: StockAvatar[] = [
@@ -32,6 +32,14 @@ export const LETTER_COLORS = [
 
 export function stockById(id: string): StockAvatar | undefined {
   return STOCK_AVATARS.find((a) => a.id === id);
+}
+
+export function avatarForPeer(peer: Peer | undefined, overrides: PeerAvatarOverrides = {}): Avatar | undefined {
+  if (!peer) return undefined;
+  if (Object.prototype.hasOwnProperty.call(overrides, peer.id)) {
+    return overrides[peer.id] ?? undefined;
+  }
+  return peer.avatar;
 }
 
 export function letterOf(name: string): string {

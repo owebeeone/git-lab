@@ -752,6 +752,33 @@ class PeerRegistry:
         checks = [{"id": "bootstrap", "status": "pending" if status == "starting" else "error", "summary": summary}]
         diagnostics = result.get("diagnostics", {})
         if isinstance(diagnostics, dict):
+            os_name = str(diagnostics.get("os", "unknown"))
+            arch = str(diagnostics.get("arch", "unknown"))
+            if os_name != "unknown" or arch != "unknown":
+                checks.append({"id": "os", "status": "ok", "summary": f"{os_name} {arch}".strip()})
+            shell = diagnostics.get("shell", {})
+            if isinstance(shell, dict):
+                shell_kind = str(shell.get("kind", "unknown"))
+                checks.append({
+                    "id": "shell",
+                    "status": "ok" if shell_kind in {"posix", "cmd", "powershell"} else "error",
+                    "summary": shell_kind,
+                })
+            workspace = diagnostics.get("workspace", {})
+            if isinstance(workspace, dict):
+                workspace_status = str(workspace.get("status", "unknown"))
+                checks.append({
+                    "id": "workspace",
+                    "status": "ok" if workspace_status in {"exists", "created"} else "error",
+                    "summary": workspace_status,
+                })
+            if "writable" in diagnostics:
+                writable = bool(diagnostics.get("writable"))
+                checks.append({
+                    "id": "writable",
+                    "status": "ok" if writable else "error",
+                    "summary": "workspace is writable" if writable else "workspace is not writable",
+                })
             for name in ("python", "uv", "git", "node", "npm"):
                 value = diagnostics.get(name, {})
                 if isinstance(value, dict):
@@ -950,6 +977,8 @@ class PeerRegistry:
                     continue
                 text = str(value.get("text") or value.get("error") or "")
                 path = str(value.get("path", ""))
+                if not text and not path:
+                    continue
                 checks.append({
                     "id": f"remote-{name}",
                     "status": "ok" if value.get("ok") else "error",

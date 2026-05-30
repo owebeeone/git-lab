@@ -7,6 +7,9 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import urllib.error
+import urllib.request
+import base64
 import hashlib
 import json
 import time
@@ -14,6 +17,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
+
+
+PYTHON_LAUNCHER = "import base64,sys;exec(base64.b64decode(sys.argv[1]))"
+REMOTE_PYTHON_CANDIDATES = ("python", "python3", "py -3")
 
 
 @dataclass(frozen=True)
@@ -98,7 +105,8 @@ class EphemeralBootstrapManager:
         hub_host = str(payload.get("hubHost", "127.0.0.1"))
         hub_port = int(payload.get("hubPort", 3140))
         location = str(payload.get("location", "."))
-        remote_command = str(payload.get("remoteCommand", default_remote_client_command(remote_client_config_path(payload))))
+        config_path = remote_client_config_path(payload)
+        remote_command = str(payload.get("remoteCommand", ""))
         try:
             target = parse_ssh_target(str(payload.get("sshAddress", "")))
             ssh_command = ssh_base_command(payload)
@@ -107,7 +115,26 @@ class EphemeralBootstrapManager:
         log_root = str(payload.get("remoteLogDir", remote_log_dir(payload)))
         log_stdout = f"{log_root}/{peer_id}.out"
         log_stderr = f"{log_root}/{peer_id}.err"
-        command = remote_start_command(location, remote_command, log_root, log_stdout, log_stderr)
+        if remote_command:
+            command = remote_start_command(
+                location,
+                remote_command,
+                log_root,
+                log_stdout,
+                log_stderr,
+            )
+        else:
+            command = remote_client_start_python_command(
+                python_command=str(payload.get("remotePythonCommand", "python")),
+                uv_command=str(payload.get("remoteUvCommand", "uv")),
+                location=location,
+                config_path=config_path,
+                payload_dir=remote_client_payload_dir(payload),
+                log_root=log_root,
+                log_stdout=log_stdout,
+                log_stderr=log_stderr,
+                pid_file=remote_client_pid_file(payload),
+            )
         process = subprocess.Popen(
             build_start_command(
                 ssh_command,
@@ -125,9 +152,12 @@ class EphemeralBootstrapManager:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        time.sleep(0.25)
-        if process.poll() is not None:
-            stdout, stderr = process.communicate(timeout=1)
+        started, stdout, stderr, error = wait_for_forwarded_health(
+            process,
+            local_port,
+            require_http_health=not bool(remote_command),
+        )
+        if not started:
             logs = {
                 "stdout": log_stdout,
                 "stderr": log_stderr,
@@ -137,8 +167,8 @@ class EphemeralBootstrapManager:
             }
             return {
                 "ok": False,
-                "error": f"ssh bootstrap exited {process.returncode}",
-                "health": process_health(False, f"ssh bootstrap exited {process.returncode}"),
+                "error": error or f"ssh bootstrap exited {process.returncode}",
+                "health": process_health(False, error or f"ssh bootstrap exited {process.returncode}"),
                 "logs": logs,
             }
         self.processes[bootstrap_id] = BootstrapProcess(
@@ -224,9 +254,18 @@ class HubBootstrapWorker:
             "remoteHubPort": int(forward.get("remoteHubPort", payload.get("remoteHubPort", 43140))),
             "hubHost": self.hub_host,
             "hubPort": self.hub_port,
-            "remoteCommand": str(payload.get("remoteCommand", default_remote_client_command(remote_client_config_path(payload)))),
             "remoteLogDir": str(payload.get("remoteLogDir", remote_log_dir(payload))),
         }
+        if "remoteCommand" in payload:
+            start_payload["remoteCommand"] = str(payload["remoteCommand"])
+        diagnostics = prepare.get("diagnostics", {})
+        if isinstance(diagnostics, dict):
+            python_command = diagnostics.get("pythonCommand")
+            uv_command = diagnostics.get("uvCommand")
+            if isinstance(python_command, str) and python_command:
+                start_payload["remotePythonCommand"] = python_command
+            if isinstance(uv_command, str) and uv_command:
+                start_payload["remoteUvCommand"] = uv_command
         start = self.processes.bootstrap(start_payload)
         self._log(peer_id, {"event": "start-result", "result": start})
         self.results[peer_id] = {
@@ -272,38 +311,23 @@ def parse_ssh_target(value: str) -> SshTarget:
 
 
 def probe_peer(payload: dict[str, Any], *, timeout: float = 8) -> dict[str, object]:
-    ssh_address = str(payload.get("sshAddress", ""))
-    location = str(payload.get("location", "."))
-    target = parse_ssh_target(ssh_address)
-    command = remote_probe_command(location)
-    try:
-        cmd = [*ssh_base_command(payload), target.destination(), command]
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    try:
-        result = subprocess.run(cmd, text=True, capture_output=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "error": "ssh probe timed out"}
-    if result.returncode != 0:
-        return {
-            "ok": False,
-            "error": result.stderr.strip() or result.stdout.strip() or f"ssh exited {result.returncode}",
-        }
-    lines = result.stdout.splitlines()
-    os_name = lines[0].strip().lower() if len(lines) > 0 else "unknown"
-    git_path = lines[1].strip() if len(lines) > 1 else ""
-    shell = lines[2].strip() if len(lines) > 2 else ""
-    workspace_exists = lines[3].strip() == "exists" if len(lines) > 3 else False
+    diagnostics = diagnose_peer(payload, timeout=timeout)
+    if not diagnostics.get("ok", False):
+        return diagnostics
+    workspace = diagnostics.get("workspace", {})
+    shell = diagnostics.get("shell", {})
+    git = diagnostics.get("git", {})
     return {
         "ok": True,
-        "sshAddress": ssh_address,
-        "os": normalize_os(os_name),
-        "shells": [Path(shell).name] if shell else [],
-        "git": bool(git_path),
+        "sshAddress": str(payload.get("sshAddress", "")),
+        "os": diagnostics.get("os", "unknown"),
+        "shells": [str(shell.get("kind", "unknown"))] if isinstance(shell, dict) else [],
+        "git": bool(isinstance(git, dict) and git.get("ok")),
         "workspace": {
-            "root": location,
-            "exists": workspace_exists,
+            "root": str(payload.get("location", ".")),
+            "exists": bool(isinstance(workspace, dict) and workspace.get("status") == "exists"),
         },
+        "diagnostics": diagnostics,
     }
 
 
@@ -329,9 +353,23 @@ def prepare_remote_client(
         )
         diagnostics = diagnose_peer(payload, timeout=timeout)
         if not diagnostics.get("ok", False):
-            return RemotePrepareResult(False, peer_id, diagnostics, plan.to_json(), str(diagnostics.get("error", ""))).to_json()
+            return RemotePrepareResult(
+                False,
+                peer_id,
+                diagnostics,
+                plan.to_json(),
+                error=str(diagnostics.get("error", "remote diagnostics failed")),
+            ).to_json()
         remote_home = remote_config_dir(payload)
-        _run_ssh(payload, f"mkdir -p {shlex.quote(remote_home)} && chmod 700 {shlex.quote(remote_home)}", timeout=timeout)
+        python_command = str(diagnostics.get("pythonCommand", "python"))
+        _run_remote_python(payload, python_command, REMOTE_ENSURE_DIRS_SCRIPT, {"paths": [remote_home]}, timeout=timeout)
+        _run_remote_python(
+            payload,
+            python_command,
+            REMOTE_STOP_CLIENT_SCRIPT,
+            {"pidFile": remote_client_pid_file(payload)},
+            timeout=timeout,
+        )
         with secure_temp_dir() as temp_dir:
             payload_root = temp_dir / "client_payload"
             client_json = remote_client_config(payload, plan)
@@ -343,54 +381,368 @@ def prepare_remote_client(
             write_json(temp_dir / "client_payload.json", payload_json)
             for filename in ("client.json", "forward.json", "client_payload.json"):
                 _run_scp(payload, temp_dir / filename, f"{target.destination()}:{remote_home}/{filename}", timeout=timeout)
-            _run_ssh(payload, f"rm -rf {shlex.quote(remote_client_payload_dir(payload))}", timeout=timeout)
+            _run_remote_python(
+                payload,
+                python_command,
+                REMOTE_REMOVE_PATHS_SCRIPT,
+                {"paths": [remote_client_payload_dir(payload)]},
+                timeout=timeout,
+            )
             _run_scp_recursive(payload, payload_root, f"{target.destination()}:{remote_home}/", timeout=timeout)
         return RemotePrepareResult(True, peer_id, diagnostics, plan.to_json(), payload_json).to_json()
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         forward = plan.to_json() if "plan" in locals() else {}
-        return RemotePrepareResult(False, peer_id, {}, forward, str(exc)).to_json()
+        return RemotePrepareResult(False, peer_id, {}, forward, error=str(exc)).to_json()
 
 
 def diagnose_peer(payload: dict[str, Any], *, timeout: float = 8) -> dict[str, object]:
     try:
         fingerprint = _run_ssh(payload, shell_fingerprint_command(), timeout=timeout).stdout.strip()
         shell_kind = classify_shell_fingerprint(fingerprint)
-        diagnostics = _run_ssh(payload, remote_diagnostics_command(str(payload.get("location", "."))), timeout=timeout).stdout
-    except (ValueError, subprocess.SubprocessError) as exc:
+        python_command, python_info = find_remote_python(payload, timeout=timeout)
+        diagnostics = _run_remote_python(
+            payload,
+            python_command,
+            REMOTE_DIAGNOSTICS_SCRIPT,
+            {"location": str(payload.get("location", "."))},
+            timeout=timeout,
+        )
+    except (ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
         return {"ok": False, "error": str(exc)}
-    parsed = parse_remote_diagnostics(diagnostics)
+    parsed = parse_remote_diagnostics_json(diagnostics)
     parsed["shell"] = {"kind": shell_kind, "raw": fingerprint}
-    parsed["ok"] = bool(parsed["python"]["ok"] and parsed["uv"]["ok"] and parsed["git"]["ok"] and parsed["node"]["ok"])
+    parsed["pythonCommand"] = python_command
+    parsed["pythonInfo"] = python_info
+    parsed["ok"] = bool(
+        parsed["python"]["ok"]
+        and parsed["uv"]["ok"]
+        and parsed["git"]["ok"]
+        and parsed["node"]["ok"]
+        and parsed["npm"]["ok"]
+        and parsed["writable"]
+    )
+    if parsed["ok"]:
+        parsed.pop("error", None)
+    else:
+        parsed["error"] = diagnostic_error(parsed)
     return parsed
 
 
 def shell_fingerprint_command() -> str:
-    return 'printf "Linux: %s | Win: %%SHELL%% / \\$env:SHELL\\n" "$SHELL"'
+    return 'echo "Linux: $SHELL | Win: %SHELL% / $env:SHELL"'
 
 
 def classify_shell_fingerprint(output: str) -> str:
-    if "$env:SHELL" not in output and "Win:" in output:
-        return "powershell"
-    if "%SHELL%" not in output and "Win:" in output:
-        return "cmd"
-    if "$SHELL" not in output and "Linux:" in output:
+    linux_value = ""
+    if "Linux:" in output:
+        linux_value = output.split("Linux:", 1)[1].split("| Win:", 1)[0].strip()
+    if linux_value and "$SHELL" not in linux_value:
         return "posix"
+    if "Win:" in output and "$env:SHELL" in output:
+        return "cmd"
+    if "Win:" in output and "%SHELL%" in output:
+        return "powershell"
     return "unknown"
 
 
-def remote_diagnostics_command(location: str) -> str:
-    quoted = shlex.quote(location)
-    return " ; ".join([
-        'printf "os=%s\\n" "$(uname -s 2>/dev/null || echo unknown)"',
-        'printf "arch=%s\\n" "$(uname -m 2>/dev/null || echo unknown)"',
-        'printf "python=%s\\n" "$(command -v python3 || command -v python || true)"',
-        'printf "uv=%s\\n" "$(command -v uv || true)"',
-        'printf "git=%s\\n" "$(command -v git || true)"',
-        'printf "node=%s\\n" "$(command -v node || true)"',
-        'printf "npm=%s\\n" "$(command -v npm || true)"',
-        f"test -d {quoted} && echo workspace=exists || echo workspace=missing",
-        "test -w . && echo writable=yes || echo writable=no",
+REMOTE_PYTHON_INFO_SCRIPT = r"""
+import base64
+import json
+import os
+import platform
+import sys
+
+print(json.dumps({
+    "ok": True,
+    "executable": sys.executable,
+    "version": platform.python_version(),
+    "osName": os.name,
+}))
+"""
+
+
+REMOTE_DIAGNOSTICS_SCRIPT = r"""
+import base64
+import json
+import os
+import platform
+import shutil
+import sys
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+location = str(payload.get("location", "."))
+workspace = Path(location)
+existed = workspace.exists()
+writable = False
+write_error = ""
+try:
+    workspace.mkdir(parents=True, exist_ok=True)
+    probe = workspace / ".griplab-write-test"
+    probe.write_text("ok", encoding="utf-8")
+    probe.unlink(missing_ok=True)
+    writable = True
+except Exception as exc:
+    write_error = str(exc)
+
+home = Path.home()
+search_dirs = [item for item in os.environ.get("PATH", "").split(os.pathsep) if item]
+search_dirs.extend([
+    str(home / ".local" / "bin"),
+    str(home / ".cargo" / "bin"),
+    str(home / ".asdf" / "shims"),
+    str(home / ".asdf" / "bin"),
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+])
+if os.name == "nt":
+    local_app = Path(os.environ.get("LOCALAPPDATA", str(home / "AppData" / "Local")))
+    program_files = Path(os.environ.get("ProgramFiles", "C:/Program Files"))
+    search_dirs.extend([
+        str(home / ".local" / "bin"),
+        str(local_app / "Microsoft" / "WindowsApps"),
+        str(program_files / "nodejs"),
+        str(program_files / "Git" / "cmd"),
     ])
+    search_dirs.extend(str(path) for path in local_app.glob("Programs/Python/Python*/Scripts"))
+    search_dirs.extend(str(path) for path in local_app.glob("Programs/Python/Python*"))
+seen = set()
+search_path = os.pathsep.join(item for item in search_dirs if item and not (item in seen or seen.add(item)))
+
+def tool(name):
+    path = shutil.which(name, path=search_path)
+    if not path and os.name == "nt" and not name.lower().endswith(".exe"):
+        path = shutil.which(f"{name}.exe", path=search_path)
+    return {
+        "name": name,
+        "ok": bool(path),
+        "path": path,
+        "summary": f"{name} found" if path else f"{name} missing",
+    }
+
+python = {
+    "name": "python",
+    "ok": True,
+    "path": sys.executable,
+    "summary": "python found",
+}
+uv = tool("uv")
+git = tool("git")
+node = tool("node")
+npm = tool("npm")
+print(json.dumps({
+    "os": platform.system().lower() or os.name,
+    "arch": platform.machine() or "unknown",
+    "python": python,
+    "uv": uv,
+    "git": git,
+    "node": node,
+    "npm": npm,
+    "uvCommand": uv["path"] or "uv",
+    "workspace": {
+        "status": "exists" if existed else ("created" if workspace.exists() else "missing"),
+        "root": location,
+    },
+    "writable": writable,
+    "writeError": write_error,
+}))
+"""
+
+
+REMOTE_ENSURE_DIRS_SCRIPT = r"""
+import base64
+import json
+import os
+import sys
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+for raw in payload.get("paths", []):
+    path = Path(str(raw))
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        if os.name != "nt":
+            os.chmod(path, 0o700)
+    except OSError:
+        pass
+print(json.dumps({"ok": True}))
+"""
+
+
+REMOTE_REMOVE_PATHS_SCRIPT = r"""
+import base64
+import json
+import shutil
+import sys
+import time
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+for raw in payload.get("paths", []):
+    path = Path(str(raw))
+    for attempt in range(10):
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.exists():
+                path.unlink()
+            break
+        except FileNotFoundError:
+            break
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.5)
+print(json.dumps({"ok": True}))
+"""
+
+
+REMOTE_STOP_CLIENT_SCRIPT = r"""
+import base64
+import json
+import os
+import signal
+import sys
+import time
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+pid_file = Path(str(payload.get("pidFile", "")))
+if not pid_file.exists():
+    print(json.dumps({"ok": True, "stopped": False, "reason": "pid-file-missing"}))
+    raise SystemExit(0)
+try:
+    record = json.loads(pid_file.read_text(encoding="utf-8"))
+except Exception:
+    record = {}
+
+def terminate(pid):
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        os.kill(pid, signal.SIGTERM)
+        return True
+    except OSError:
+        return False
+
+pids = [record.get("childPid"), record.get("wrapperPid")]
+signalled = [pid for pid in pids if terminate(pid)]
+if signalled:
+    time.sleep(2)
+try:
+    pid_file.unlink(missing_ok=True)
+except OSError:
+    pass
+print(json.dumps({"ok": True, "stopped": bool(signalled), "pids": signalled}))
+"""
+
+
+REMOTE_LOG_TAIL_SCRIPT = r"""
+import base64
+import json
+import sys
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+line_count = int(payload.get("lines", 120))
+result = {}
+for name, raw in payload.get("paths", {}).items():
+    path = Path(str(raw))
+    if not path.exists():
+        result[name] = {"path": str(path), "ok": True, "text": "<missing>"}
+        continue
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        result[name] = {"path": str(path), "ok": True, "text": "\n".join(text.splitlines()[-line_count:])}
+    except Exception as exc:
+        result[name] = {"path": str(path), "ok": False, "error": str(exc)}
+print(json.dumps(result))
+"""
+
+
+REMOTE_CLIENT_START_SCRIPT = r"""
+import base64
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+payload = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
+payload_dir = Path(str(payload["payloadDir"]))
+config_path = str(payload["configPath"])
+log_root = Path(str(payload["logRoot"]))
+log_stdout = Path(str(payload["logStdout"]))
+log_stderr = Path(str(payload["logStderr"]))
+pid_file = Path(str(payload["pidFile"]))
+uv_command = str(payload.get("uvCommand") or "uv")
+log_root.mkdir(parents=True, exist_ok=True)
+
+def terminate_pid(pid):
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+def stop_existing():
+    if not pid_file.exists():
+        return
+    try:
+        record = json.loads(pid_file.read_text(encoding="utf-8"))
+    except Exception:
+        record = {}
+    terminate_pid(record.get("childPid"))
+    terminate_pid(record.get("wrapperPid"))
+    time.sleep(0.5)
+
+try:
+    stop_existing()
+    out = log_stdout.open("ab")
+    err = log_stderr.open("ab")
+    command = [
+        uv_command,
+        "run",
+        "--with-editable",
+        "services/filedelta",
+        "--with-editable",
+        "services/diffstream",
+        "--with-editable",
+        "services/griplab_service",
+        "griplab",
+        "client",
+        "--config",
+        config_path,
+    ]
+    child = subprocess.Popen(command, cwd=str(payload_dir), stdout=out, stderr=err)
+    pid_file.write_text(json.dumps({"wrapperPid": os.getpid(), "childPid": child.pid}) + "\n", encoding="utf-8")
+
+    def handle_signal(signum, _frame):
+        terminate_pid(child.pid)
+        raise SystemExit(128 + int(signum))
+
+    signal.signal(signal.SIGTERM, handle_signal)
+    if hasattr(signal, "SIGINT"):
+        signal.signal(signal.SIGINT, handle_signal)
+    raise SystemExit(child.wait())
+except Exception as exc:
+    try:
+        with log_stderr.open("ab") as err:
+            err.write((f"bootstrap error: {exc}\n").encode("utf-8", errors="replace"))
+    except Exception:
+        pass
+    raise
+"""
+
+
+def remote_diagnostics_command(location: str, *, shell_kind: str = "posix") -> str:
+    _ = shell_kind
+    return remote_python_command("python", REMOTE_DIAGNOSTICS_SCRIPT, {"location": location})
 
 
 def parse_remote_diagnostics(output: str) -> dict[str, object]:
@@ -410,6 +762,40 @@ def parse_remote_diagnostics(output: str) -> dict[str, object]:
         "workspace": {"status": values.get("workspace", "unknown")},
         "writable": values.get("writable") == "yes",
     }
+
+
+def parse_remote_diagnostics_json(output: dict[str, object] | str) -> dict[str, object]:
+    if isinstance(output, dict):
+        parsed = output
+    else:
+        parsed = json.loads(output)
+    return {
+        "os": normalize_os(str(parsed.get("os", ""))),
+        "arch": str(parsed.get("arch", "unknown") or "unknown"),
+        "python": parsed.get("python", tool_check("python", "")),
+        "uv": parsed.get("uv", tool_check("uv", "")),
+        "git": parsed.get("git", tool_check("git", "")),
+        "node": parsed.get("node", tool_check("node", "")),
+        "npm": parsed.get("npm", tool_check("npm", "")),
+        "uvCommand": str(parsed.get("uvCommand", "uv")),
+        "workspace": parsed.get("workspace", {"status": "unknown"}),
+        "writable": bool(parsed.get("writable", False)),
+        "writeError": str(parsed.get("writeError", "")),
+    }
+
+
+def diagnostic_error(parsed: dict[str, object]) -> str:
+    missing = [
+        name
+        for name in ("python", "uv", "git", "node", "npm")
+        if not (isinstance(parsed.get(name), dict) and parsed[name].get("ok"))  # type: ignore[index, union-attr]
+    ]
+    if missing:
+        return "missing remote tools: " + ", ".join(missing)
+    if not parsed.get("writable", False):
+        detail = str(parsed.get("writeError", "")).strip()
+        return "workspace is not writable" + (f": {detail}" if detail else "")
+    return "remote diagnostics failed"
 
 
 def tool_check(name: str, value: str) -> dict[str, object]:
@@ -485,12 +871,142 @@ def remote_start_command(
     log_root: str,
     log_stdout: str,
     log_stderr: str,
+    *,
+    stop_existing: str | None = None,
 ) -> str:
-    return " && ".join([
+    parts = [
         f"mkdir -p {shlex.quote(log_root)}",
         f"cd {shlex.quote(location)}",
-        f"{remote_command} > {shlex.quote(log_stdout)} 2> {shlex.quote(log_stderr)}",
+    ]
+    if stop_existing:
+        parts.append(stop_existing)
+    parts.append(f"{remote_command} > {shlex.quote(log_stdout)} 2> {shlex.quote(log_stderr)}")
+    return " && ".join(parts)
+
+
+def remote_stop_client_command(config_path: str) -> str:
+    script = r"""
+import os
+import signal
+import subprocess
+import sys
+import time
+
+target = sys.argv[1]
+config_dir = os.path.dirname(target)
+payload_dir = os.path.join(config_dir, "client_payload") if config_dir else ""
+self_pid = os.getpid()
+
+def process_rows():
+    result = subprocess.run(["ps", "-eo", "pid=,ppid=,args="], text=True, capture_output=True, check=False)
+    rows = {}
+    for line in result.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid_text, ppid_text, command = parts
+        try:
+            pid = int(pid_text)
+            ppid = int(ppid_text)
+        except ValueError:
+            continue
+        rows[pid] = (ppid, command)
+    return rows
+
+def ancestors(rows):
+    found = {self_pid}
+    pid = rows.get(self_pid, (os.getppid(), ""))[0]
+    while pid and pid not in found:
+        found.add(pid)
+        pid = rows.get(pid, (0, ""))[0]
+    return found
+
+def matching_roots(rows, skip):
+    roots = set()
+    needles = [value for value in (target, config_dir, payload_dir) if value]
+    for pid, (_ppid, command) in rows.items():
+        if pid in skip:
+            continue
+        if any(needle in command for needle in needles) and "client" in command and (
+            "griplab" in command or "client_payload" in command
+        ):
+            roots.add(pid)
+    return roots
+
+def with_descendants(rows, roots, skip):
+    children = {}
+    for pid, (ppid, _command) in rows.items():
+        children.setdefault(ppid, set()).add(pid)
+    found = set()
+    stack = list(roots)
+    while stack:
+        pid = stack.pop()
+        if pid in found or pid in skip:
+            continue
+        found.add(pid)
+        stack.extend(children.get(pid, set()))
+    return found
+
+rows = process_rows()
+skip = ancestors(rows)
+targets = with_descendants(rows, matching_roots(rows, skip), skip)
+for pid in targets:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+time.sleep(0.5)
+rows = process_rows()
+skip = ancestors(rows)
+for pid in with_descendants(rows, matching_roots(rows, skip), skip):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+"""
+    return " ".join([
+        'PYTHON="$(command -v python3 || command -v python)"',
+        "&&",
+        '"$PYTHON"',
+        "-c",
+        shlex.quote(script),
+        shlex.quote(config_path),
     ])
+
+
+def remote_client_pid_file(payload: dict[str, Any]) -> str:
+    return f"{remote_config_dir(payload).rstrip('/')}/client.pid.json"
+
+
+def remote_client_start_python_command(
+    *,
+    python_command: str,
+    uv_command: str,
+    location: str,
+    config_path: str,
+    payload_dir: str,
+    log_root: str,
+    log_stdout: str,
+    log_stderr: str,
+    pid_file: str,
+) -> str:
+    return remote_python_command(
+        python_command,
+        REMOTE_CLIENT_START_SCRIPT,
+        {
+            "location": location,
+            "configPath": config_path,
+            "payloadDir": payload_dir,
+            "logRoot": log_root,
+            "logStdout": log_stdout,
+            "logStderr": log_stderr,
+            "pidFile": pid_file,
+            "uvCommand": uv_command,
+        },
+    )
 
 
 def runtime_health(diagnostics: dict[str, object]) -> dict[str, object]:
@@ -516,31 +1032,68 @@ def process_health(ok: bool, summary: str) -> dict[str, object]:
     }
 
 
+def wait_for_forwarded_health(
+    process: subprocess.Popen[bytes],
+    local_port: int,
+    *,
+    timeout: float = 8.0,
+    require_http_health: bool = True,
+) -> tuple[bool, bytes | None, bytes | None, str | None]:
+    deadline = time.time() + timeout
+    url = f"http://127.0.0.1:{local_port}/health"
+    while time.time() < deadline:
+        if process.poll() is not None:
+            stdout, stderr = process.communicate(timeout=1)
+            return False, stdout, stderr, f"ssh bootstrap exited {process.returncode}"
+        if require_http_health:
+            try:
+                with urllib.request.urlopen(url, timeout=0.25) as response:
+                    if 200 <= response.status < 500:
+                        return True, None, None, None
+            except urllib.error.HTTPError as exc:
+                if 200 <= exc.code < 500:
+                    return True, None, None, None
+            except (OSError, urllib.error.URLError):
+                pass
+        elif is_tcp_port_open(local_port):
+            return True, None, None, None
+        time.sleep(0.2)
+    if process.poll() is not None:
+        stdout, stderr = process.communicate(timeout=1)
+        return False, stdout, stderr, f"ssh bootstrap exited {process.returncode}"
+    return False, None, None, f"remote client did not become healthy on forwarded port {local_port}"
+
+
+def is_tcp_port_open(port: int) -> bool:
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
 def decode_process_output(value: bytes | None) -> str:
     return (value or b"").decode("utf-8", errors="replace").strip()
 
 
 def remote_log_tails(payload: dict[str, Any], paths: dict[str, str], *, timeout: float = 3, lines: int = 120) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for name, path in paths.items():
-        quoted = shlex.quote(path)
-        command = f"if test -f {quoted}; then tail -n {int(lines)} {quoted}; else echo '<missing>'; fi"
-        try:
-            output = _run_ssh(payload, command, timeout=timeout).stdout
-            result[name] = {"path": path, "ok": True, "text": output.rstrip()}
-        except (OSError, ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
-            result[name] = {"path": path, "ok": False, "error": str(exc)}
-    return result
-
-
-def remote_probe_command(location: str) -> str:
-    quoted = shlex.quote(location)
-    return " ; ".join([
-        "uname -s",
-        "command -v git || true",
-        'printf "%s\\n" "$SHELL"',
-        f"test -d {quoted} && echo exists || echo missing",
-    ])
+    try:
+        python_command = str(payload.get("remotePythonCommand", ""))
+        if not python_command:
+            python_command, _info = find_remote_python(payload, timeout=timeout)
+        output = _run_remote_python(
+            payload,
+            python_command,
+            REMOTE_LOG_TAIL_SCRIPT,
+            {"paths": paths, "lines": int(lines)},
+            timeout=timeout,
+        )
+        return output
+    except (OSError, ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+        return {
+            name: {"path": path, "ok": False, "error": str(exc)}
+            for name, path in paths.items()
+        }
 
 
 def ssh_base_command(payload: dict[str, Any]) -> list[str]:
@@ -718,6 +1271,43 @@ def write_json(path: Path, value: Any) -> None:
     import json
 
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def remote_python_command(python_command: str, script: str, payload: dict[str, object] | None = None) -> str:
+    script_b64 = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    payload_b64 = base64.b64encode(json.dumps(payload or {}).encode("utf-8")).decode("ascii")
+    return f'{python_command} -c "{PYTHON_LAUNCHER}" {script_b64} {payload_b64}'
+
+
+def find_remote_python(payload: dict[str, Any], *, timeout: float) -> tuple[str, dict[str, object]]:
+    errors: list[str] = []
+    for candidate in REMOTE_PYTHON_CANDIDATES:
+        try:
+            result = _run_remote_python(payload, candidate, REMOTE_PYTHON_INFO_SCRIPT, {}, timeout=timeout)
+        except (OSError, ValueError, subprocess.SubprocessError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{candidate}: {exc}")
+            continue
+        if result.get("ok", False):
+            return candidate, result
+    raise subprocess.SubprocessError("python was not found on collaborator host; " + " | ".join(errors))
+
+
+def _run_remote_python(
+    payload: dict[str, Any],
+    python_command: str,
+    script: str,
+    data: dict[str, object],
+    *,
+    timeout: float,
+) -> dict[str, object]:
+    result = _run_ssh(payload, remote_python_command(python_command, script, data), timeout=timeout)
+    stdout = result.stdout.strip()
+    if not stdout:
+        return {}
+    parsed = json.loads(stdout)
+    if isinstance(parsed, dict):
+        return parsed
+    raise subprocess.SubprocessError("remote python returned non-object JSON")
 
 
 def _run_ssh(payload: dict[str, Any], remote_command: str, *, timeout: float) -> subprocess.CompletedProcess[str]:

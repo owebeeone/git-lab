@@ -17,7 +17,7 @@ function registerServicePlaceholderTaps() {
 }
 
 export function registerLabServiceTaps() {
-  registerLabUiTaps();
+  registerLabUiTaps({ registerPeersAtom: false });
   grok.registerTap(createServiceStateTap());
   grok.registerTap(createServiceWorkspaceStatusTap());
   grok.registerTap(createServiceDepsGraphTap());

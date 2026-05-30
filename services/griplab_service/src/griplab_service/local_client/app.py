@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import json
 import os
-import pty
 import re
+import shlex
 import signal
 import subprocess
 import struct
-import termios
 import tempfile
 import threading
 import time
@@ -23,6 +21,20 @@ try:
     import resource
 except ImportError:  # pragma: no cover - Windows hardening is deferred.
     resource = None  # type: ignore[assignment]
+
+try:
+    import fcntl
+    import pty
+    import termios
+except ImportError:  # pragma: no cover - Windows imports are exercised on collaborator hosts.
+    fcntl = None  # type: ignore[assignment]
+    pty = None  # type: ignore[assignment]
+    termios = None  # type: ignore[assignment]
+
+try:
+    from winpty import PtyProcess as WinPtyProcess
+except ImportError:  # pragma: no cover - pywinpty is a Windows-only dependency.
+    WinPtyProcess = None  # type: ignore[assignment]
 
 from aiohttp import WSMsgType, web
 from aiohttp.client_exceptions import ClientConnectionResetError
@@ -1434,9 +1446,10 @@ class CommandSessionState:
 class TerminalProcess:
     session_id: str
     target: RepoRunState
-    master_fd: int
-    process: asyncio.subprocess.Process
+    backend: str
+    process: Any
     read_task: asyncio.Task[None]
+    master_fd: int | None = None
 
 
 def child_cpu_ms() -> tuple[int, int] | None:
@@ -1480,6 +1493,28 @@ def output_with_exit_status(target: RepoRunState) -> str:
         return target.output
     prefix = "" if target.output.endswith("\n") or not target.output else "\n"
     return f"{target.output}{prefix}{line}\n"
+
+
+async def read_winpty_command_chunk(process: Any, timeout: float = 0.2) -> tuple[str | None, bool]:
+    task = asyncio.create_task(asyncio.to_thread(process.read, 4096))
+    done, _pending = await asyncio.wait({task}, timeout=timeout)
+    if not done:
+        if not await asyncio.to_thread(process.isalive):
+            task.cancel()
+            return None, True
+        try:
+            return str(await task), False
+        except EOFError:
+            return None, True
+    try:
+        return str(task.result()), False
+    except EOFError:
+        return None, True
+
+
+def answer_winpty_command_queries(process: Any, chunk: str) -> None:
+    if "\x1b[c" in chunk:
+        process.write("\x1b[?1;2c")
 
 
 class SessionManager:
@@ -1557,6 +1592,10 @@ class SessionManager:
             targets=[target],
             interactive=True,
         )
+        if os.name == "nt":
+            return await self._open_windows_terminal(session, target, session_id, argv, repo_path, rows, cols)
+        if pty is None or fcntl is None or termios is None:
+            return self._open_unavailable_terminal(session, target, "interactive terminals require POSIX PTY support\n")
         self.sessions.insert(0, session)
         self._persist_session(session)
         self._append_event(session.id, {"event": "terminalOpened", "sessionId": session.id, "targetId": target.target_id})
@@ -1586,9 +1625,10 @@ class SessionManager:
         self.terminals[session_id] = TerminalProcess(
             session_id=session_id,
             target=target,
-            master_fd=master_fd,
+            backend="posix",
             process=process,
             read_task=read_task,
+            master_fd=master_fd,
         )
         self._publish_sessions()
         return session_id
@@ -1598,6 +1638,11 @@ class SessionManager:
         data = payload.get("data")
         if terminal is None or not isinstance(data, str):
             return False
+        if terminal.backend == "winpty":
+            terminal.process.write(data)
+            return True
+        if terminal.master_fd is None:
+            return False
         os.write(terminal.master_fd, data.encode("utf-8"))
         return True
 
@@ -1605,7 +1650,14 @@ class SessionManager:
         terminal = self.terminals.get(str(payload.get("sessionId", "")))
         if terminal is None:
             return False
-        set_pty_size(terminal.master_fd, int(payload.get("rows", 30)), int(payload.get("cols", 120)))
+        rows = int(payload.get("rows", 30))
+        cols = int(payload.get("cols", 120))
+        if terminal.backend == "winpty":
+            terminal.process.setwinsize(rows, cols)
+            return True
+        if terminal.master_fd is None:
+            return False
+        set_pty_size(terminal.master_fd, rows, cols)
         return True
 
     async def terminal_close(self, payload: dict[str, Any]) -> bool:
@@ -1614,6 +1666,70 @@ class SessionManager:
             return False
         await self._close_terminal(terminal)
         return True
+
+    async def _open_windows_terminal(
+        self,
+        session: CommandSessionState,
+        target: RepoRunState,
+        session_id: str,
+        argv: list[str],
+        repo_path: str,
+        rows: int,
+        cols: int,
+    ) -> str:
+        if WinPtyProcess is None:
+            return self._open_unavailable_terminal(session, target, "interactive terminals require pywinpty on Windows\n")
+        self.sessions.insert(0, session)
+        self._persist_session(session)
+        self._append_event(session.id, {
+            "event": "terminalOpened",
+            "sessionId": session.id,
+            "targetId": target.target_id,
+            "backend": "winpty",
+        })
+        cwd = (self.config.workspace.root / repo_path).resolve()
+        env = os.environ.copy()
+        env.setdefault("TERM", "xterm-256color")
+        process = await asyncio.to_thread(
+            WinPtyProcess.spawn,
+            argv,
+            cwd=str(cwd),
+            env=env,
+            dimensions=(rows, cols),
+        )
+        read_task = asyncio.create_task(self._read_winpty_terminal(session, target, process))
+        self.terminals[session_id] = TerminalProcess(
+            session_id=session_id,
+            target=target,
+            backend="winpty",
+            process=process,
+            read_task=read_task,
+        )
+        self._publish_sessions()
+        return session_id
+
+    def _open_unavailable_terminal(
+        self,
+        session: CommandSessionState,
+        target: RepoRunState,
+        message: str,
+    ) -> str:
+        session.interactive = False
+        target.exit_code = 127
+        target.duration_ms = 0
+        target.user_ms = None
+        target.system_ms = None
+        self.sessions.insert(0, session)
+        self._persist_session(session)
+        self._append_event(session.id, {
+            "event": "terminalUnavailable",
+            "sessionId": session.id,
+            "targetId": target.target_id,
+            "exitCode": target.exit_code,
+        })
+        self._append_output(session.id, target, message)
+        self._publish_sessions()
+        return session.id
 
     def sessions_json(self) -> list[dict[str, object]]:
         return [session_to_json(session) for session in self.sessions]
@@ -1675,24 +1791,15 @@ class SessionManager:
             "targetId": target.target_id,
             "repoPath": target.repo_path,
         })
-        self._append_output(session.id, target, "$ " + " ".join(session.argv) + "\n")
+        command_line = command_line_for_platform(session.argv)
+        self._append_output(session.id, target, "$ " + command_line + "\n")
         self._publish_output(session.id, target.repo_path)
         cwd = (self.config.workspace.root / target.repo_path).resolve()
         try:
-            process = await asyncio.create_subprocess_exec(
-                *session.argv,
-                cwd=str(cwd),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            assert process.stdout is not None
-            while True:
-                chunk = await process.stdout.read(4096)
-                if not chunk:
-                    break
-                self._append_output(session.id, target, chunk.decode("utf-8", errors="replace"))
-                self._publish_output(session.id, target.repo_path)
-            target.exit_code = await process.wait()
+            if os.name == "nt":
+                await self._run_target_windows_pty(session, target, cwd, command_line)
+            else:
+                await self._run_target_posix_pty(session, target, cwd)
         except Exception as exc:
             self._append_output(session.id, target, f"error: {exc}\n")
             target.exit_code = 127
@@ -1712,6 +1819,86 @@ class SessionManager:
             self._persist_session(session)
             self._publish_output(session.id, target.repo_path)
             self._publish_sessions()
+
+    async def _run_target_posix_pty(
+        self,
+        session: CommandSessionState,
+        target: RepoRunState,
+        cwd: Path,
+    ) -> None:
+        if pty is None or fcntl is None or termios is None:
+            raise ValueError("cmd.run requires POSIX PTY support")
+        master_fd, slave_fd = pty.openpty()
+        set_pty_size(master_fd, 30, 120)
+        env = os.environ.copy()
+        env.setdefault("TERM", "xterm-256color")
+
+        def prepare_command_child() -> None:
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *session.argv,
+                cwd=str(cwd),
+                env=env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=prepare_command_child,
+            )
+        finally:
+            os.close(slave_fd)
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(os.read, master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                self._append_output(session.id, target, chunk.decode("utf-8", errors="replace"))
+                self._publish_output(session.id, target.repo_path)
+            target.exit_code = await process.wait()
+        finally:
+            safe_close_fd(master_fd)
+
+    async def _run_target_windows_pty(
+        self,
+        session: CommandSessionState,
+        target: RepoRunState,
+        cwd: Path,
+        command_line: str,
+    ) -> None:
+        if WinPtyProcess is None:
+            raise ValueError("cmd.run requires pywinpty on Windows")
+        env = os.environ.copy()
+        env.setdefault("TERM", "xterm-256color")
+        shell = os.environ.get("COMSPEC", "cmd.exe")
+        process = await asyncio.to_thread(
+            WinPtyProcess.spawn,
+            [shell, "/C", command_line],
+            cwd=str(cwd),
+            env=env,
+            dimensions=(30, 120),
+        )
+        try:
+            while True:
+                chunk, done = await read_winpty_command_chunk(process)
+                if done:
+                    break
+                if not chunk:
+                    continue
+                answer_winpty_command_queries(process, str(chunk))
+                self._append_output(session.id, target, str(chunk))
+                self._publish_output(session.id, target.repo_path)
+            target.exit_code = await asyncio.to_thread(process.wait)
+        finally:
+            if target.exit_code is None:
+                try:
+                    await asyncio.to_thread(process.terminate, True)
+                except TypeError:
+                    await asyncio.to_thread(process.terminate)
 
     async def _read_terminal(self, session: CommandSessionState, target: RepoRunState, master_fd: int) -> None:
         try:
@@ -1742,13 +1929,49 @@ class SessionManager:
                 self._publish_output(session.id, target.repo_path)
                 self._publish_sessions()
 
+    async def _read_winpty_terminal(self, session: CommandSessionState, target: RepoRunState, process: Any) -> None:
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(process.read, 4096)
+                except EOFError:
+                    break
+                if not chunk:
+                    if not await asyncio.to_thread(process.isalive):
+                        break
+                    continue
+                self._append_output(session.id, target, str(chunk))
+                self._publish_output(session.id, target.repo_path)
+        finally:
+            terminal = self.terminals.pop(session.id, None)
+            if terminal is not None:
+                try:
+                    target.exit_code = await asyncio.to_thread(process.wait)
+                except Exception:
+                    target.exit_code = getattr(process, "exitstatus", None)
+                target.duration_ms = int(time.time() * 1000 - session.started_at)
+                self._append_event(session.id, {
+                    "event": "terminalClosed",
+                    "sessionId": session.id,
+                    "targetId": target.target_id,
+                    "exitCode": target.exit_code,
+                    "durationMs": target.duration_ms,
+                })
+                self._persist_session(session)
+                self._publish_output(session.id, target.repo_path)
+                self._publish_sessions()
+
     async def _close_terminal(self, terminal: TerminalProcess) -> None:
+        if terminal.backend == "winpty":
+            await self._close_winpty_terminal(terminal)
+            return
         if terminal.process.returncode is None:
             try:
                 os.killpg(terminal.process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-        safe_close_fd(terminal.master_fd)
+        if terminal.master_fd is not None:
+            safe_close_fd(terminal.master_fd)
         try:
             await asyncio.wait_for(terminal.read_task, timeout=2)
         except asyncio.TimeoutError:
@@ -1757,6 +1980,24 @@ class SessionManager:
                     os.killpg(terminal.process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            terminal.read_task.cancel()
+            try:
+                await terminal.read_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _close_winpty_terminal(self, terminal: TerminalProcess) -> None:
+        process = terminal.process
+        try:
+            try:
+                await asyncio.to_thread(process.terminate, True)
+            except TypeError:
+                await asyncio.to_thread(process.terminate)
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(terminal.read_task, timeout=2)
+        except asyncio.TimeoutError:
             terminal.read_task.cancel()
             try:
                 await terminal.read_task
@@ -1811,6 +2052,12 @@ def parse_argv(payload: dict[str, Any]) -> list[str]:
     return list(argv)
 
 
+def command_line_for_platform(argv: list[str], platform_name: str = os.name) -> str:
+    if platform_name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
 def parse_repo_paths(payload: dict[str, Any]) -> list[str]:
     repos = payload.get("repos", [""])
     if not isinstance(repos, list) or not repos:
@@ -1826,6 +2073,8 @@ def parse_terminal_argv(payload: dict[str, Any]) -> list[str]:
     argv = payload.get("argv")
     if isinstance(argv, list) and argv and all(isinstance(item, str) and item for item in argv):
         return list(argv)
+    if os.name == "nt":
+        return [os.environ.get("COMSPEC", "cmd.exe")]
     shell = os.environ.get("SHELL", "/bin/sh")
     if shell.endswith("sh") and shell != "/bin/sh":
         return [shell, "-l", "-i"]
@@ -1956,6 +2205,8 @@ def is_closing_transport_error(exc: RuntimeError) -> bool:
 
 
 def set_pty_size(fd: int, rows: int, cols: int) -> None:
+    if fcntl is None or termios is None:
+        raise ValueError("interactive terminals require POSIX PTY support; Windows ConPTY is not implemented yet")
     rows = max(1, rows)
     cols = max(1, cols)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
