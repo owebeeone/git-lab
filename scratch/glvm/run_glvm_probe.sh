@@ -31,8 +31,8 @@ run_local() {
 run_remote() {
   local name="$1"
   local target="$2"
+  local remote_shell="$3"
   local out_dir="$RUN_DIR/$name"
-  local remote_path="/tmp/glvm-probe-$$.sh"
   mkdir -p "$out_dir"
 
   if [[ -z "$target" ]]; then
@@ -41,8 +41,14 @@ run_remote() {
   fi
 
   printf 'Running remote probe: %s (%s)\n' "$name" "$target"
-  scp ${SSH_OPTS:-} "$PROBE_SCRIPT" "$target:$remote_path" >"$out_dir/scp.log" 2>&1
-  ssh ${SSH_OPTS:-} "$target" "bash '$remote_path'; rm -f '$remote_path'" >"$out_dir/probe.log" 2>&1
+  if ssh ${SSH_OPTS:-} "$target" "$remote_shell" <"$PROBE_SCRIPT" >"$out_dir/probe.log" 2>&1; then
+    printf 'ok\n' >"$out_dir/status.txt"
+  else
+    local exit_code="$?"
+    printf 'failed exit=%s\n' "$exit_code" >"$out_dir/status.txt"
+    printf 'Remote probe failed: %s (%s), exit=%s\n' "$name" "$target" "$exit_code" >&2
+    return 0
+  fi
 }
 
 if [[ "${MACOS:-}" == "LOCAL" ]]; then
@@ -51,8 +57,8 @@ else
   printf 'Skipping macOS: set MACOS=LOCAL to run locally\n'
 fi
 
-run_remote "windows-wsl" "${WINSSH:-}"
-run_remote "rpi-linux" "${PISSH:-}"
+run_remote "windows-wsl" "${WINSSH:-}" "${WIN_REMOTE_SHELL:-wsl bash -s}"
+run_remote "rpi-linux" "${PISSH:-}" "${PI_REMOTE_SHELL:-bash -s}"
 
 {
   printf 'GLVM probe run: %s\n' "$STAMP"

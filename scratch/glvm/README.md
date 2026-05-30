@@ -22,9 +22,11 @@ cp scratch/glvm/glvm_probe.env.example scratch/glvm/glvm_probe.env
 MACOS=LOCAL
 WINSSH='user@windows-host'
 PISSH='pi@raspberrypi'
+WIN_REMOTE_SHELL='wsl bash -s'
+PI_REMOTE_SHELL='bash -s'
 ```
 
-Leave `WINSSH` or `PISSH` empty to skip that host.
+Leave `WINSSH` or `PISSH` empty to skip that host. If SSH lands directly in WSL instead of Windows OpenSSH, set `WIN_REMOTE_SHELL='bash -s'`.
 
 3. Run from the `grip-lab` repo root:
 
@@ -43,4 +45,4 @@ scratch/glvm/outputs/<timestamp>/rpi-linux/probe.log
 scratch/glvm/outputs/<timestamp>/summary.txt
 ```
 
-The remote script is copied to a temporary directory on each SSH host and removed after it runs.
+The remote script is streamed over SSH, so it does not need to write to a remote temporary path.
