@@ -18,3 +18,4 @@ __pycache__/
 
 # Local scratch space: dump things here we don't want in the repo
 scratch/
+.grip-lab/
