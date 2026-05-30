@@ -17,7 +17,7 @@ import {
 import type { CommandSession, RepoRun, SessionFilterMod } from '../types';
 import { createTerminal } from '../terminalController';
 import { LAB_SERVICE_MODE } from '../dataMode';
-import { runServiceCommand } from '../serviceClient/commands';
+import { openServiceTerminal, resizeServiceTerminal, runServiceCommand, sendServiceTerminalInput } from '../serviceClient/commands';
 import PeerSelect from './PeerSelect';
 import Avatar from './Avatar';
 
@@ -63,14 +63,28 @@ function validateCommand(cmd: string, repoCount: number): { errors: string[]; wa
   return { errors, warnings, argv };
 }
 
-function TerminalPane({ termKey, content, interactive, dark }: { termKey: string; content: string; interactive: boolean; dark: boolean }) {
+function TerminalPane({
+  termKey, content, interactive, dark, sessionId,
+}: {
+  termKey: string;
+  content: string;
+  interactive: boolean;
+  dark: boolean;
+  sessionId?: string;
+}) {
   return (
     <div
       key={termKey}
       className="xterm-host"
       ref={(el) => {
         if (!el) return;
-        const h = createTerminal(el, { content, interactive, dark });
+        const h = createTerminal(el, {
+          content,
+          interactive,
+          dark,
+          onData: LAB_SERVICE_MODE && sessionId ? (data) => { void sendServiceTerminalInput(sessionId, data); } : undefined,
+          onResize: LAB_SERVICE_MODE && sessionId ? (cols, rows) => { void resizeServiceTerminal(sessionId, cols, rows); } : undefined,
+        });
         return () => h.dispose();
       }}
     />
@@ -164,6 +178,13 @@ export default function SessionsView() {
   };
 
   const openTerminal = () => {
+    if (LAB_SERVICE_MODE) {
+      void openServiceTerminal('', targetPeer).then((sessionId) => {
+        selectedTap?.set(sessionId);
+        selectedTargetTap?.set('');
+      });
+      return;
+    }
     const ts = Date.now();
     const session: CommandSession = {
       id: `term-${ts}`,
@@ -416,10 +437,11 @@ export default function SessionsView() {
               )}
 
               <TerminalPane
-                termKey={`${current.id}::${activeTarget.repoPath}`}
+                termKey={`${current.id}::${activeTarget.repoPath}::${output.length}`}
                 content={output}
                 interactive={!!current.interactive}
                 dark={theme === 'dark'}
+                sessionId={current.interactive ? current.id : undefined}
               />
             </>
           ) : (

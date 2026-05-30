@@ -16,7 +16,13 @@ export interface TermHandle {
 
 export function createTerminal(
   el: HTMLElement,
-  opts: { content?: string; interactive?: boolean; dark?: boolean },
+  opts: {
+    content?: string;
+    interactive?: boolean;
+    dark?: boolean;
+    onData?: (data: string) => void;
+    onResize?: (cols: number, rows: number) => void;
+  },
 ): TermHandle {
   const term = new Terminal({
     convertEol: true,
@@ -32,7 +38,12 @@ export function createTerminal(
   term.loadAddon(fit);
   term.loadAddon(search);
   term.open(el);
-  const safeFit = () => { try { fit.fit(); } catch { /* not laid out yet */ } };
+  const safeFit = () => {
+    try {
+      fit.fit();
+      opts.onResize?.(term.cols, term.rows);
+    } catch { /* not laid out yet */ }
+  };
   safeFit();
 
   const ro = new ResizeObserver(safeFit);
@@ -41,12 +52,16 @@ export function createTerminal(
   if (opts.content) term.write(opts.content);
 
   if (opts.interactive) {
-    term.write('\u001b[2m# mock interactive session — type to echo\u001b[0m\r\n$ ');
-    term.onData((d) => {
-      if (d === '\r') term.write('\r\n$ ');
-      else if (d === '\u007f') term.write('\b \b'); // backspace
-      else term.write(d);
-    });
+    if (opts.onData) {
+      term.onData(opts.onData);
+    } else {
+      term.write('\u001b[2m# mock interactive session — type to echo\u001b[0m\r\n$ ');
+      term.onData((d) => {
+        if (d === '\r') term.write('\r\n$ ');
+        else if (d === '\u007f') term.write('\b \b'); // backspace
+        else term.write(d);
+      });
+    }
   }
 
   return {
