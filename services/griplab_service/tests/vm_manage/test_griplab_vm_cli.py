@@ -21,19 +21,41 @@ def test_providers_lists_declared_adapters(capsys) -> None:
     captured = capsys.readouterr()
 
     assert exit_code == 0
-    assert "orbstack: unavailable" in captured.out
-    assert "lima: unavailable" in captured.out
-    assert "wsl2: unavailable" in captured.out
-    assert "native-host: unavailable" in captured.out
+    assert "orbstack:" in captured.out
+    assert "lima:" in captured.out
+    assert "wsl2:" in captured.out
+    assert "native-host:" in captured.out
 
 
 def test_declared_provider_order_matches_plan() -> None:
-    assert griplab_vm.PROVIDER_NAMES[:4] == (
+    provider_names = tuple(provider.name for provider in griplab_vm.provider_definitions())
+
+    assert provider_names == griplab_vm.PROVIDER_NAMES
+    assert provider_names[:4] == (
         "orbstack",
         "lima",
         "wsl2",
         "native-host",
     )
+
+
+def test_provider_capabilities_identify_non_vm_providers() -> None:
+    providers = {provider.name: provider for provider in griplab_vm.provider_definitions()}
+
+    assert providers["wsl2"].capabilities.true_vm_boundary is False
+    assert providers["native-host"].capabilities.true_vm_boundary is False
+    assert providers["lima"].capabilities.true_vm_boundary is True
+
+
+def test_provider_detection_reports_missing_command(monkeypatch) -> None:
+    monkeypatch.setattr(griplab_vm.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(griplab_vm.shutil, "which", lambda command: None)
+
+    statuses = {status.name: status for status in griplab_vm.provider_statuses()}
+
+    assert statuses["orbstack"].available is False
+    assert statuses["orbstack"].detail == "missing command: orb"
+    assert statuses["native-host"].available is True
 
 
 def test_checkpoint_has_no_sudo_shellouts() -> None:

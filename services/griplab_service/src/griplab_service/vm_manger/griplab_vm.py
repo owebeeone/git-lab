@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import platform
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -45,6 +47,40 @@ class ProviderStatus:
     name: str
     available: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    true_vm_boundary: bool
+    cloud_init: bool
+    host_mounts: bool
+    read_only_mounts: bool
+    explicit_port_forwards: bool
+    provider_ssh: bool
+    snapshots: bool
+    clone: bool
+    custom_images: bool
+    cross_arch: bool
+    rootless_daily_ops: bool
+
+
+@dataclass(frozen=True)
+class ProviderDefinition:
+    name: str
+    command: str | None
+    host_systems: tuple[str, ...]
+    capabilities: ProviderCapabilities
+    detail: str
+
+    def detect(self) -> ProviderStatus:
+        system = platform.system().lower()
+        if self.host_systems and system not in self.host_systems:
+            return ProviderStatus(self.name, False, f"unsupported on {system or 'unknown'}")
+        if self.command is None:
+            return ProviderStatus(self.name, True, self.detail)
+        if shutil.which(self.command) is None:
+            return ProviderStatus(self.name, False, f"missing command: {self.command}")
+        return ProviderStatus(self.name, True, f"{self.command} found")
 
 
 @dataclass(frozen=True)
@@ -170,9 +206,125 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def provider_statuses() -> list[ProviderStatus]:
+    return [definition.detect() for definition in provider_definitions()]
+
+
+def provider_definitions() -> list[ProviderDefinition]:
     return [
-        ProviderStatus(name=name, available=False, detail="detection not implemented")
-        for name in PROVIDER_NAMES
+        ProviderDefinition(
+            name="orbstack",
+            command="orb",
+            host_systems=("darwin",),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=True,
+                cloud_init=True,
+                host_mounts=True,
+                read_only_mounts=False,
+                explicit_port_forwards=True,
+                provider_ssh=True,
+                snapshots=False,
+                clone=True,
+                custom_images=True,
+                cross_arch=False,
+                rootless_daily_ops=True,
+            ),
+            detail="macOS OrbStack machine provider",
+        ),
+        ProviderDefinition(
+            name="lima",
+            command="limactl",
+            host_systems=("darwin", "linux"),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=True,
+                cloud_init=True,
+                host_mounts=True,
+                read_only_mounts=True,
+                explicit_port_forwards=True,
+                provider_ssh=True,
+                snapshots=False,
+                clone=False,
+                custom_images=True,
+                cross_arch=True,
+                rootless_daily_ops=True,
+            ),
+            detail="Lima VM provider",
+        ),
+        ProviderDefinition(
+            name="wsl2",
+            command="wsl",
+            host_systems=("windows",),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=False,
+                cloud_init=False,
+                host_mounts=True,
+                read_only_mounts=False,
+                explicit_port_forwards=False,
+                provider_ssh=False,
+                snapshots=False,
+                clone=False,
+                custom_images=True,
+                cross_arch=False,
+                rootless_daily_ops=True,
+            ),
+            detail="Windows WSL2 machine provider",
+        ),
+        ProviderDefinition(
+            name="native-host",
+            command=None,
+            host_systems=("darwin", "linux", "windows"),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=False,
+                cloud_init=False,
+                host_mounts=True,
+                read_only_mounts=False,
+                explicit_port_forwards=False,
+                provider_ssh=False,
+                snapshots=False,
+                clone=False,
+                custom_images=False,
+                cross_arch=False,
+                rootless_daily_ops=True,
+            ),
+            detail="current host command provider",
+        ),
+        ProviderDefinition(
+            name="multipass",
+            command="multipass",
+            host_systems=("darwin", "linux", "windows"),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=True,
+                cloud_init=True,
+                host_mounts=True,
+                read_only_mounts=False,
+                explicit_port_forwards=True,
+                provider_ssh=False,
+                snapshots=True,
+                clone=False,
+                custom_images=True,
+                cross_arch=False,
+                rootless_daily_ops=True,
+            ),
+            detail="Canonical Multipass VM provider",
+        ),
+        ProviderDefinition(
+            name="qemu",
+            command="qemu-img",
+            host_systems=("darwin", "linux"),
+            capabilities=ProviderCapabilities(
+                true_vm_boundary=True,
+                cloud_init=True,
+                host_mounts=True,
+                read_only_mounts=False,
+                explicit_port_forwards=True,
+                provider_ssh=False,
+                snapshots=True,
+                clone=True,
+                custom_images=True,
+                cross_arch=True,
+                rootless_daily_ops=True,
+            ),
+            detail="raw QEMU provider",
+        ),
     ]
 
 
