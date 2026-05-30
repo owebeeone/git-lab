@@ -113,6 +113,14 @@ export interface DependencyEdge {
   target: string;
 }
 
+export interface WorkspaceTreeEntry {
+  repoPath: string;
+  path: string;
+  kind: 'file' | 'dir';
+  size?: number | null;
+  mtimeMs?: number | null;
+}
+
 // A monitored file as seen through the (future) delta protocol: a live image of
 // contents plus its git status. In the mock this is just static data.
 export interface FileImage {

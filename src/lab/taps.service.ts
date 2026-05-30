@@ -8,6 +8,7 @@ import {
   SESSION_OUTPUT,
 } from './grips';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
+import { createServiceTreeTap } from './serviceTaps/treeTap';
 import { createServiceWorkspaceStatusTap } from './serviceTaps/workspaceStatusTap';
 import { createServiceStateTap } from './serviceStateTap';
 import { registerLabUiTaps } from './taps';
@@ -43,5 +44,6 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceStateTap());
   grok.registerTap(createServiceWorkspaceStatusTap());
   grok.registerTap(createServiceDepsGraphTap());
+  grok.registerTap(createServiceTreeTap());
   registerServicePlaceholderTaps();
 }

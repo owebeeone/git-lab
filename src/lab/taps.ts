@@ -40,11 +40,13 @@ import {
   RUN_DIALOG_OPEN, RUN_DIALOG_OPEN_TAP,
   WORKSPACE_DEP_EDGES,
   WORKSPACE_REPOS,
+  WORKSPACE_TREE,
+  WORKSPACE_TREE_VERSION,
 } from './grips';
 import { registerGraphSimTap } from './graphEngine';
 import { registerFileContentTap } from './fileContentTap';
 import { registerSessionOutputTap } from './sessionOutputTap';
-import { dependencyEdges, REPO_STATUS_BY_PEER } from './fakeData';
+import { dependencyEdges, REPO_STATUS_BY_PEER, WORKSPACE_FILES } from './fakeData';
 import type { RepoStatus } from './types';
 
 // All mock state is held in simple settable atom taps. When the backend lands,
@@ -122,6 +124,17 @@ function registerMockWorkspaceTaps() {
     compute: ({ getHomeParam }: any) => {
       const repos = (getHomeParam(WORKSPACE_REPOS) ?? []) as RepoStatus[];
       return new Map([[WORKSPACE_DEP_EDGES, dependencyEdges(repos.map((repo) => repo.path))]]);
+    },
+  }) as unknown as Tap);
+
+  grok.registerTap(createFunctionTap({
+    provides: [WORKSPACE_TREE, WORKSPACE_TREE_VERSION],
+    compute: () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const values = new Map<any, any>();
+      values.set(WORKSPACE_TREE, WORKSPACE_FILES.map((file) => ({ ...file, kind: 'file' as const })));
+      values.set(WORKSPACE_TREE_VERSION, 'mock');
+      return values;
     },
   }) as unknown as Tap);
 }

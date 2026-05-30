@@ -1,12 +1,12 @@
 import { useGrip } from '@owebeeone/grip-react';
-import { WORKSPACE_FILES } from '../fakeData';
 import {
   EXPLORER_COLLAPSED, EXPLORER_COLLAPSED_TAP,
   EXPLORER_OPEN, EXPLORER_OPEN_TAP,
   EXPLORER_WIDTH, EXPLORER_WIDTH_TAP,
   EXPLORER_DRAG, EXPLORER_DRAG_TAP,
+  WORKSPACE_TREE,
 } from '../grips';
-import type { Peer } from '../types';
+import type { Peer, WorkspaceTreeEntry } from '../types';
 import { dragProps, fileLink } from '../dnd';
 import { Icon } from './icons';
 
@@ -21,9 +21,10 @@ interface TNode {
   children: Map<string, TNode>;
 }
 
-function buildTree(): TNode {
+function buildTree(entries: WorkspaceTreeEntry[]): TNode {
   const root: TNode = { name: '', kind: 'dir', repoPath: '', children: new Map() };
-  for (const { repoPath, path } of WORKSPACE_FILES) {
+  for (const { repoPath, path, kind } of entries) {
+    if (kind !== 'file') continue;
     const repoName = repoPath || 'root';
     let repoNode = root.children.get(repoName);
     if (!repoNode) {
@@ -52,7 +53,7 @@ export default function FileExplorer({
   onOpen: (key: string) => void;
   peer?: Peer;
 }) {
-  const tree = buildTree();
+  const tree = buildTree(useGrip(WORKSPACE_TREE) ?? []);
   const collapsedList = useGrip(EXPLORER_COLLAPSED) ?? [];
   const collapsedTap = useGrip(EXPLORER_COLLAPSED_TAP);
   const collapsed = new Set(collapsedList);

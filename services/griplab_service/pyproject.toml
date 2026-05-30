@@ -9,6 +9,7 @@ description = "Local service protocol and runtime for grip-lab"
 requires-python = ">=3.11"
 dependencies = [
   "aiohttp==3.13.5",
+  "watchdog==6.0.0",
 ]
 
 [project.scripts]

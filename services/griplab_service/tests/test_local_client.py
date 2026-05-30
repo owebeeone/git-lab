@@ -9,6 +9,7 @@ from aiohttp import ClientSession, WSCloseCode
 from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
+from griplab_service.local_client.tree import tree_snapshot_payload
 
 
 def write_config(tmp_path: Path, *, status_poll_interval_ms: int = 1000) -> Path:
@@ -114,6 +115,100 @@ def test_local_client_websocket_protocol(tmp_path: Path) -> None:
                     error_msg = await ws.receive_json(timeout=2)
                     assert error_msg["kind"] == "error"
                     assert error_msg["error"]["code"] == "unknown-method"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path))
+    (config.workspace.root / "src").mkdir()
+    (config.workspace.root / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (config.workspace.root / "node_modules").mkdir()
+    (config.workspace.root / "node_modules" / "ignored.js").write_text("nope\n", encoding="utf-8")
+
+    payload = tree_snapshot_payload(config.workspace.root)
+    paths = {entry["path"] for entry in payload["entries"]}
+
+    assert "README.md" in paths
+    assert "src/app.py" in paths
+    assert "node_modules/ignored.js" not in paths
+    assert payload["version"]
+
+
+def test_tree_stream_publishes_watchdog_changes_and_refresh(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "tree.subscribe",
+                        "streamId": "tree0001",
+                        "payload": {},
+                    })
+                    first = await ws.receive_json(timeout=2)
+                    assert first["kind"] == "stream-event"
+                    assert first["streamId"] == "tree0001"
+                    assert first["payload"]["seq"] == 1
+                    entries = first["payload"]["payload"]["entries"]
+                    assert any(entry["path"] == "README.md" for entry in entries)
+
+                    (config.workspace.root / "src").mkdir()
+                    (config.workspace.root / "src" / "new.py").write_text("print('hi')\n", encoding="utf-8")
+                    changed = await ws.receive_json(timeout=2)
+                    assert changed["payload"]["seq"] == 2
+                    changed_paths = {entry["path"] for entry in changed["payload"]["payload"]["entries"]}
+                    assert "src/new.py" in changed_paths
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "tree.refresh",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    response = await ws.receive_json(timeout=2)
+                    assert snapshot["kind"] == "stream-event"
+                    assert snapshot["payload"]["seq"] == 3
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"refreshed": 1}
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_tree_stream_ignores_ignored_path_changes(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        (config.workspace.root / "node_modules").mkdir()
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "tree.subscribe",
+                        "streamId": "tree0001",
+                        "payload": {},
+                    })
+                    await ws.receive_json(timeout=2)
+
+                    (config.workspace.root / "node_modules" / "ignored.js").write_text("nope\n", encoding="utf-8")
+                    try:
+                        await ws.receive_json(timeout=0.5)
+                    except TimeoutError:
+                        pass
+                    else:
+                        raise AssertionError("ignored path emitted a tree snapshot")
         finally:
             server.stop()
 

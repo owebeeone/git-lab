@@ -107,6 +107,31 @@ const changedWorkspaceStreamEvent = await nextChangedWorkspaceEvent;
 assert.equal(changedWorkspaceStreamEvent.value.seq, 2);
 assert.deepEqual(changedWorkspaceStreamEvent.value.payload, { repos: [{ path: '', name: 'repo', dirty: true }] });
 
+const treeIterator = client.subscribe('tree.subscribe')[Symbol.asyncIterator]();
+const nextTreeEvent = treeIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 3);
+assert.equal(transport.sent[2].method, 'tree.subscribe');
+assert.equal(transport.sent[2].streamId, 's000002');
+transport.push({
+  messageId: transport.sent[2].messageId,
+  kind: 'stream-event',
+  method: 'tree.subscribe',
+  streamId: 's000002',
+  payload: {
+    streamId: 's000002',
+    seq: 1,
+    event: 'snapshot',
+    payload: { version: 'v1', entries: [{ repoPath: '', path: 'README.md', kind: 'file' }] },
+  },
+});
+const treeStreamEvent = await nextTreeEvent;
+assert.equal(treeStreamEvent.value.event, 'snapshot');
+assert.deepEqual(treeStreamEvent.value.payload, {
+  version: 'v1',
+  entries: [{ repoPath: '', path: 'README.md', kind: 'file' }],
+});
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');
