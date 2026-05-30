@@ -688,6 +688,64 @@ def test_hub_diff_subscribe_routes_file_streams_and_publishes_diff(tmp_path: Pat
     asyncio.run(run())
 
 
+def test_hub_diff_subscribe_uses_registered_tunnel(tmp_path: Path) -> None:
+    async def run() -> None:
+        hub_root = tmp_path / "hub"
+        hub_root.mkdir()
+        client_root = tmp_path / "client"
+        client_root.mkdir()
+        hub_config = load_config(write_hub_config(hub_root))
+        client_config = load_config(write_config(client_root))
+        readme = client_config.workspace.root / "README.md"
+        readme.write_text("hello\nchanged\n", encoding="utf-8")
+        hub = HubServer(hub_config)
+        local = LocalClientServer(client_config)
+        hub.start()
+        local.start()
+        try:
+            assert hub._runner is not None
+            registry = hub._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
+            registry.register_tunnel("target", local_peer_port=local._port)  # type: ignore[attr-defined]
+            registry.hello({"peerId": "target", "name": "Target"})
+
+            async with ClientSession() as session:
+                async with session.ws_connect(hub.ws_url) as caller:
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "diff.subscribe",
+                        "streamId": "diff-stream",
+                        "payload": {
+                            "left": {
+                                "peerId": "target",
+                                "repoPath": "",
+                                "path": "README.md",
+                                "ref": {"kind": "head"},
+                            },
+                            "right": {
+                                "peerId": "target",
+                                "repoPath": "",
+                                "path": "README.md",
+                                "ref": {"kind": "working"},
+                            },
+                            "window": {"lineStart": 0, "lineEnd": 10},
+                            "contextLines": 1,
+                        },
+                    })
+                    event = await caller.receive_json(timeout=2)
+                    payload = event["payload"]["payload"]
+                    lines = [line for hunk in payload["hunks"] for line in hunk["lines"]]
+
+                    assert event["method"] == "diff.subscribe"
+                    assert payload["contentType"] == "application/vnd.griplab.diff+json;version=1"
+                    assert any(line["kind"] == "add" and line["right"] == "changed" for line in lines)
+        finally:
+            local.stop()
+            hub.stop()
+
+    asyncio.run(run())
+
+
 def test_hub_diff_source_error_publishes_diagnostic(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_hub_config(tmp_path))

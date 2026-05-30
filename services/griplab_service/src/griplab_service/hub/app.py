@@ -438,6 +438,8 @@ class HubDiffStream:
     right_target: "HubConnection | None" = None
     left_target_stream_id: str | None = None
     right_target_stream_id: str | None = None
+    left_tunnel_task: asyncio.Task[None] | None = None
+    right_tunnel_task: asyncio.Task[None] | None = None
     left_snapshot: TextWindowSnapshot | None = None
     right_snapshot: TextWindowSnapshot | None = None
     seq: int = 0
@@ -1276,6 +1278,59 @@ class PeerRegistry:
 
     async def _open_diff_source(self, stream: HubDiffStream, side: str, endpoint: DiffEndpoint) -> None:
         target = self.connections.get(endpoint.peer_id)
+        if target is not None:
+            target_stream_id = self._next_relay_stream_id()
+            if side == "left":
+                stream.left_target = target
+                stream.left_target_stream_id = target_stream_id
+            else:
+                stream.right_target = target
+                stream.right_target_stream_id = target_stream_id
+            self.diff_sources_by_target_stream[target_stream_id] = (stream, side)
+            read_window = effective_window(stream.window, stream.context_lines)
+            await target.send(ProtocolEnvelope(
+                message_id=self._next_relay_message_id(),
+                kind="request",
+                method="file.subscribe",
+                stream_id=target_stream_id,
+                payload={
+                    "repoPath": endpoint.repo_path,
+                    "path": endpoint.path,
+                    "ref": endpoint.ref.kind,
+                    "window": {"lineStart": read_window.line_start, "lineEnd": read_window.line_end},
+                },
+            ))
+            return
+        tunnel = self.tunnels.get(endpoint.peer_id)
+        if tunnel is not None:
+            if not self._peer_is_online(endpoint.peer_id):
+                await self._publish_diff_diagnostic(
+                    stream,
+                    "peer-starting",
+                    f"source peer is not registered online: {endpoint.peer_id}",
+                    side,
+                    {"peerId": endpoint.peer_id},
+                )
+                return
+            target_stream_id = self._next_relay_stream_id()
+            if side == "left":
+                stream.left_target_stream_id = target_stream_id
+            else:
+                stream.right_target_stream_id = target_stream_id
+            self.diff_sources_by_target_stream[target_stream_id] = (stream, side)
+            task = asyncio.create_task(self._run_diff_tunnel_source(
+                tunnel,
+                stream,
+                side,
+                self._next_relay_message_id(),
+                target_stream_id,
+                endpoint,
+            ))
+            if side == "left":
+                stream.left_tunnel_task = task
+            else:
+                stream.right_tunnel_task = task
+            return
         if target is None:
             await self._publish_diff_diagnostic(
                 stream,
@@ -1285,29 +1340,64 @@ class PeerRegistry:
                 {"peerId": endpoint.peer_id},
             )
             return
-        target_stream_id = self._next_relay_stream_id()
-        if side == "left":
-            stream.left_target = target
-            stream.left_target_stream_id = target_stream_id
-        else:
-            stream.right_target = target
-            stream.right_target_stream_id = target_stream_id
-        self.diff_sources_by_target_stream[target_stream_id] = (stream, side)
+
+    async def _run_diff_tunnel_source(
+        self,
+        tunnel: PeerTunnel,
+        stream: HubDiffStream,
+        side: str,
+        target_message_id: str,
+        target_stream_id: str,
+        endpoint: DiffEndpoint,
+    ) -> None:
         read_window = effective_window(stream.window, stream.context_lines)
-        await target.send(ProtocolEnvelope(
-            message_id=self._next_relay_message_id(),
-            kind="request",
-            method="file.subscribe",
-            stream_id=target_stream_id,
-            payload={
-                "repoPath": endpoint.repo_path,
-                "path": endpoint.path,
-                "ref": endpoint.ref.kind,
-                "window": {"lineStart": read_window.line_start, "lineEnd": read_window.line_end},
-            },
-        ))
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(tunnel.ws_url) as ws:
+                    await ws.send_json(envelope_to_json(ProtocolEnvelope(
+                        message_id=target_message_id,
+                        kind="request",
+                        method="file.subscribe",
+                        stream_id=target_stream_id,
+                        payload={
+                            "repoPath": endpoint.repo_path,
+                            "path": endpoint.path,
+                            "ref": endpoint.ref.kind,
+                            "window": {"lineStart": read_window.line_start, "lineEnd": read_window.line_end},
+                        },
+                    )))
+                    async for msg in ws:
+                        if msg.type != WSMsgType.TEXT:
+                            continue
+                        envelope = envelope_from_json(json.loads(msg.data))
+                        if envelope.kind == "stream-event" and envelope.stream_id == target_stream_id:
+                            await self._handle_diff_source_envelope(stream, side, envelope)
+                        elif envelope.kind == "error":
+                            await self._publish_diff_diagnostic(
+                                stream,
+                                envelope.error.code if envelope.error is not None else "target-error",
+                                envelope.error.message if envelope.error is not None else "target returned an error",
+                                side,
+                                {},
+                            )
+                            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._publish_diff_diagnostic(stream, "peer-tunnel-error", str(exc), side, {})
+        finally:
+            if self.diff_sources_by_target_stream.get(target_stream_id) == (stream, side):
+                self.diff_sources_by_target_stream.pop(target_stream_id, None)
 
     async def _close_diff_stream(self, stream: HubDiffStream) -> None:
+        tunnel_tasks = [task for task in [stream.left_tunnel_task, stream.right_tunnel_task] if task is not None]
+        for task in tunnel_tasks:
+            task.cancel()
+        for task in tunnel_tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         for target, target_stream_id in [
             (stream.left_target, stream.left_target_stream_id),
             (stream.right_target, stream.right_target_stream_id),
@@ -1332,6 +1422,15 @@ class PeerRegistry:
         expected_target = stream.left_target if side == "left" else stream.right_target
         if expected_target is not target:
             return False
+        await self._handle_diff_source_envelope(stream, side, envelope)
+        return True
+
+    async def _handle_diff_source_envelope(
+        self,
+        stream: HubDiffStream,
+        side: str,
+        envelope: ProtocolEnvelope,
+    ) -> None:
         event = str(envelope.payload.get("event", ""))
         payload = dict(envelope.payload.get("payload", {}))
         try:
@@ -1340,7 +1439,7 @@ class PeerRegistry:
             elif event == "delta":
                 current = stream.left_snapshot if side == "left" else stream.right_snapshot
                 if current is None:
-                    return True
+                    return
                 snapshot = apply_text_window_delta(current, text_window_delta_from_json(payload))
             elif event == "reset":
                 snapshot = reset_from_json(payload).snapshot
@@ -1352,9 +1451,9 @@ class PeerRegistry:
                     side,
                     dict(payload.get("details", {})),
                 )
-                return True
+                return
             else:
-                return True
+                return
         except Exception as exc:
             await self._publish_diff_diagnostic(
                 stream,
@@ -1363,13 +1462,12 @@ class PeerRegistry:
                 side,
                 {"event": event},
             )
-            return True
+            return
         if side == "left":
             stream.left_snapshot = snapshot
         else:
             stream.right_snapshot = snapshot
         await self._publish_diff_if_ready(stream)
-        return True
 
     async def _publish_diff_if_ready(self, stream: HubDiffStream) -> None:
         if stream.left_snapshot is None or stream.right_snapshot is None:

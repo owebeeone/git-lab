@@ -62,6 +62,7 @@ SESSIONS_KEY = web.AppKey("sessions", Any)
 BOOTSTRAPS_KEY = web.AppKey("bootstraps", Any)
 CHAT_KEY = web.AppKey("chat", Any)
 TREE_WATCH_KEY = web.AppKey("tree_watch", TreeWatchRegistry)
+FILE_WATCH_KEY = web.AppKey("file_watch", Any)
 
 
 class LocalClientServer:
@@ -150,6 +151,7 @@ def create_app(config: ServiceConfig) -> web.Application:
     app[BOOTSTRAPS_KEY] = EphemeralBootstrapManager()
     app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
     app[TREE_WATCH_KEY] = TreeWatchRegistry(config.workspace.root, asyncio.get_running_loop())
+    app[FILE_WATCH_KEY] = FileWatchRegistry(asyncio.get_running_loop())
     app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
@@ -161,6 +163,7 @@ def create_app(config: ServiceConfig) -> web.Application:
 
 async def cleanup_app(app: web.Application) -> None:
     await app[TREE_WATCH_KEY].close()
+    await app[FILE_WATCH_KEY].close()
     app[BOOTSTRAPS_KEY].close()
 
 
@@ -194,6 +197,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         request.app[BOOTSTRAPS_KEY],
         request.app[CHAT_KEY],
         request.app[TREE_WATCH_KEY],
+        request.app[FILE_WATCH_KEY],
         ws,
     )
 
@@ -493,7 +497,7 @@ class FileStream:
     connection: FileConnection | None = None
     subscription: Any | None = None
     task: asyncio.Task[None] | None = None
-    watcher: "FileWatcher" | None = None
+    watch_target: Path | None = None
     queue: asyncio.Queue[None] | None = None
     temp_path: Path | None = None
 
@@ -542,6 +546,7 @@ class LocalClientConnection:
         bootstraps: EphemeralBootstrapManager,
         chat_store: ChatStore,
         tree_watches: TreeWatchRegistry,
+        file_watches: "FileWatchRegistry",
         ws: web.WebSocketResponse,
     ) -> None:
         self.config = config
@@ -549,6 +554,7 @@ class LocalClientConnection:
         self.bootstraps = bootstraps
         self.chat_store = chat_store
         self.tree_watches = tree_watches
+        self.file_watches = file_watches
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
@@ -639,9 +645,8 @@ class LocalClientConnection:
             await connection.open()
             stream.subscription = await connection.subscribe_window(subscriber, window)
             if source["ref"] == "working":
-                watcher = FileWatcher(Path(source["path"]), asyncio.get_running_loop(), queue)
-                stream.watcher = watcher
-                watcher.start()
+                stream.watch_target = Path(source["path"])
+                self.file_watches.subscribe(stream.watch_target, queue)
                 stream.task = asyncio.create_task(self._watch_file(stream))
         except Exception as exc:
             if stream.temp_path is not None:
@@ -802,8 +807,8 @@ class LocalClientConnection:
                 await stream.task
             except asyncio.CancelledError:
                 pass
-        if stream.watcher is not None:
-            stream.watcher.stop()
+        if stream.watch_target is not None and stream.queue is not None:
+            self.file_watches.unsubscribe(stream.watch_target, stream.queue)
         if stream.connection is not None:
             await stream.connection.close(reason)
         if stream.temp_path is not None:
@@ -1155,9 +1160,8 @@ def materialize_head_file(repo_root: Path, path: str) -> Path:
         handle.close()
 
 
-class FileChangeHandler(FileSystemEventHandler):
-    def __init__(self, target: Path, notify: Any) -> None:
-        self.target = target.resolve()
+class DirectoryFileChangeHandler(FileSystemEventHandler):
+    def __init__(self, notify: Any) -> None:
         self.notify = notify
 
     def on_any_event(self, event: FileSystemEvent) -> None:
@@ -1165,23 +1169,38 @@ class FileChangeHandler(FileSystemEventHandler):
         dest_path = getattr(event, "dest_path", "")
         if dest_path:
             paths.append(Path(dest_path))
-        if any(path.resolve() == self.target for path in paths):
-            self.notify()
+        self.notify(paths)
 
 
-class FileWatcher:
-    def __init__(self, target: Path, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[None]) -> None:
-        self.target = target.resolve()
+class FileDirectoryWatch:
+    def __init__(self, parent: Path, loop: asyncio.AbstractEventLoop, observer_factory: Any = Observer) -> None:
+        self.parent = parent.resolve()
         self.loop = loop
-        self.queue = queue
-        self.observer = Observer()
-        self.handler = FileChangeHandler(self.target, self._notify)
+        self.observer = observer_factory()
+        self.handler = DirectoryFileChangeHandler(self._notify)
+        self.subscribers: dict[Path, set[asyncio.Queue[None]]] = {}
         self._running = False
+
+    @property
+    def empty(self) -> bool:
+        return not self.subscribers
+
+    def subscribe(self, target: Path, queue: asyncio.Queue[None]) -> None:
+        self.subscribers.setdefault(target.resolve(), set()).add(queue)
+        self.start()
+
+    def unsubscribe(self, target: Path, queue: asyncio.Queue[None]) -> None:
+        queues = self.subscribers.get(target.resolve())
+        if not queues:
+            return
+        queues.discard(queue)
+        if not queues:
+            self.subscribers.pop(target.resolve(), None)
 
     def start(self) -> None:
         if self._running:
             return
-        self.observer.schedule(self.handler, str(self.target.parent), recursive=False)
+        self.observer.schedule(self.handler, str(self.parent), recursive=False)
         self.observer.start()
         self._running = True
 
@@ -1192,8 +1211,45 @@ class FileWatcher:
         self.observer.join(timeout=2)
         self._running = False
 
-    def _notify(self) -> None:
-        self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
+    def _notify(self, paths: list[Path]) -> None:
+        changed = {path.resolve() for path in paths}
+        for target, queues in list(self.subscribers.items()):
+            if target not in changed:
+                continue
+            for queue in list(queues):
+                self.loop.call_soon_threadsafe(queue.put_nowait, None)
+
+
+class FileWatchRegistry:
+    """Share non-recursive file parent watchers across file subscriptions."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, observer_factory: Any = Observer) -> None:
+        self.loop = loop
+        self.observer_factory = observer_factory
+        self.directories: dict[Path, FileDirectoryWatch] = {}
+
+    def subscribe(self, target: Path, queue: asyncio.Queue[None]) -> None:
+        parent = target.resolve().parent
+        watch = self.directories.get(parent)
+        if watch is None:
+            watch = FileDirectoryWatch(parent, self.loop, self.observer_factory)
+            self.directories[parent] = watch
+        watch.subscribe(target, queue)
+
+    def unsubscribe(self, target: Path, queue: asyncio.Queue[None]) -> None:
+        parent = target.resolve().parent
+        watch = self.directories.get(parent)
+        if watch is None:
+            return
+        watch.unsubscribe(target, queue)
+        if watch.empty:
+            watch.stop()
+            self.directories.pop(parent, None)
+
+    async def close(self) -> None:
+        for watch in list(self.directories.values()):
+            watch.stop()
+        self.directories.clear()
 
 
 @dataclass

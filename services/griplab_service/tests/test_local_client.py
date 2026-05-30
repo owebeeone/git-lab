@@ -10,7 +10,7 @@ from aiohttp import ClientSession, WSCloseCode
 from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
-from griplab_service.local_client.app import SessionManager, parse_terminal_argv
+from griplab_service.local_client.app import FileWatchRegistry, SessionManager, parse_terminal_argv
 from griplab_service.local_client.tree import TreeWatchRegistry, tree_snapshot_payload
 
 
@@ -291,6 +291,63 @@ def test_tree_watch_registry_shares_one_observer(tmp_path: Path) -> None:
         registry.unsubscribe(q1)
         registry.unsubscribe(q2)
         await registry.close()
+        assert observers[0].stop_count == 1
+
+    asyncio.run(run())
+
+
+def test_file_watch_registry_shares_parent_observer(tmp_path: Path) -> None:
+    class FakeObserver:
+        def __init__(self) -> None:
+            self.schedule_count = 0
+            self.start_count = 0
+            self.stop_count = 0
+
+        def schedule(self, *args: object, **kwargs: object) -> None:
+            self.schedule_count += 1
+
+        def start(self) -> None:
+            self.start_count += 1
+
+        def stop(self) -> None:
+            self.stop_count += 1
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    class FakeEvent:
+        def __init__(self, src_path: Path) -> None:
+            self.src_path = str(src_path)
+
+    async def run() -> None:
+        observers: list[FakeObserver] = []
+
+        def observer_factory() -> FakeObserver:
+            observer = FakeObserver()
+            observers.append(observer)
+            return observer
+
+        registry = FileWatchRegistry(asyncio.get_running_loop(), observer_factory=observer_factory)
+        left = tmp_path / "left.txt"
+        right = tmp_path / "right.txt"
+        left.write_text("left\n", encoding="utf-8")
+        right.write_text("right\n", encoding="utf-8")
+        q1: asyncio.Queue[None] = asyncio.Queue()
+        q2: asyncio.Queue[None] = asyncio.Queue()
+
+        registry.subscribe(left, q1)
+        registry.subscribe(right, q2)
+        assert len(observers) == 1
+        assert observers[0].schedule_count == 1
+        assert observers[0].start_count == 1
+
+        registry.directories[tmp_path.resolve()].handler.on_any_event(FakeEvent(left))  # type: ignore[arg-type]
+        await asyncio.wait_for(q1.get(), timeout=1)
+        assert q2.empty()
+
+        registry.unsubscribe(left, q1)
+        assert observers[0].stop_count == 0
+        registry.unsubscribe(right, q2)
         assert observers[0].stop_count == 1
 
     asyncio.run(run())
