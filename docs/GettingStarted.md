@@ -225,6 +225,18 @@ with:
 GRIPLAB_TRACE=1 python scripts/start_griplab.py --with-hub
 ```
 
+When tracing is enabled, JSONL events are also appended to:
+
+```text
+scratch/griplab-perf.jsonl
+```
+
+Override that path with `GRIPLAB_TRACE_FILE`:
+
+```bash
+GRIPLAB_TRACE=1 GRIPLAB_TRACE_FILE=scratch/remote-file-open.jsonl python scripts/start_griplab.py --with-hub
+```
+
 ## Troubleshooting
 
 - If the service fails to import `filedelta`, `diffstream`, or
