@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from aiohttp import WSMsgType, web
+from aiohttp import ClientSession, WSMsgType, web
 from diffstream import (
     DiffDiagnostic,
     DiffEndpoint,
@@ -198,6 +198,22 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
         ))
         connection.registry.publish()
         return
+    if envelope.method == "peer.heartbeat":
+        try:
+            connection.registry.heartbeat(envelope.payload)
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-request", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"ok": True},
+        ))
+        return
     if envelope.method == "peer.presence.subscribe":
         if not envelope.stream_id:
             await connection.send(ProtocolEnvelope.error_response(
@@ -369,6 +385,18 @@ class RoutedStream:
     target_stream_id: str
 
 
+@dataclass(frozen=True)
+class PeerTunnel:
+    peer_id: str
+    local_peer_port: int
+    remote_hub_port: int | None = None
+    remote_client_port: int | None = None
+
+    @property
+    def ws_url(self) -> str:
+        return f"ws://127.0.0.1:{self.local_peer_port}/ws"
+
+
 @dataclass
 class HubDiffStream:
     caller: "HubConnection"
@@ -518,6 +546,7 @@ class PeerRegistry:
         self.routed_streams_by_target: dict[str, RoutedStream] = {}
         self.routed_streams_by_caller: dict[str, RoutedStream] = {}
         self.diff_sources_by_target_stream: dict[str, tuple[HubDiffStream, str]] = {}
+        self.tunnels: dict[str, PeerTunnel] = {}
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer = connected_presence(payload)
@@ -527,6 +556,34 @@ class PeerRegistry:
 
     def register_connection(self, peer_id: str, connection: HubConnection) -> None:
         self.connections[peer_id] = connection
+
+    def register_tunnel(
+        self,
+        peer_id: str,
+        *,
+        local_peer_port: int,
+        remote_hub_port: int | None = None,
+        remote_client_port: int | None = None,
+    ) -> None:
+        self.tunnels[peer_id] = PeerTunnel(
+            peer_id=peer_id,
+            local_peer_port=local_peer_port,
+            remote_hub_port=remote_hub_port,
+            remote_client_port=remote_client_port,
+        )
+
+    def heartbeat(self, payload: dict[str, Any]) -> None:
+        peer_id = str(payload.get("peerId", ""))
+        if not peer_id:
+            raise ValueError("peer.heartbeat requires peerId")
+        peer = self.peers.get(peer_id)
+        if peer is None:
+            raise ValueError(f"peer is not registered: {peer_id}")
+        peer["lastSeenAt"] = int(time.time() * 1000)
+        peer["status"] = "online"
+        peer["online"] = True
+        peer["summary"] = "Connected"
+        self.publish()
 
     async def connection_closed(self, peer_id: str, connection: HubConnection) -> None:
         if self.connections.get(peer_id) is connection:
@@ -611,6 +668,35 @@ class PeerRegistry:
             queue.put_nowait(None)
 
     async def route_request(self, caller: HubConnection, envelope: ProtocolEnvelope) -> None:
+        target_peer_id = str(envelope.payload.get("targetPeerId", ""))
+        method = str(envelope.payload.get("method", ""))
+        payload_value = envelope.payload.get("payload", {})
+        payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+        if not target_peer_id:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-target", "routed request requires targetPeerId"),
+            ))
+            return
+        if not method:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-method", "routed request requires method"),
+            ))
+            return
+        tunnel = self.tunnels.get(target_peer_id)
+        if tunnel is not None:
+            if not self._peer_is_online(target_peer_id):
+                await caller.send(ProtocolEnvelope.error_response(
+                    message_id=envelope.message_id,
+                    method=envelope.method,
+                    error=ErrorInfo("peer-starting", f"target peer is not registered online: {target_peer_id}"),
+                ))
+                return
+            await self._route_request_via_tunnel(caller, envelope, tunnel, method, payload)
+            return
         target = await self._resolve_target(caller, envelope)
         if target is None:
             return
@@ -629,6 +715,53 @@ class PeerRegistry:
             message_id=target_message_id,
             method=method,
             payload=payload,
+        ))
+
+    async def _route_request_via_tunnel(
+        self,
+        caller: HubConnection,
+        envelope: ProtocolEnvelope,
+        tunnel: PeerTunnel,
+        method: str,
+        payload: dict[str, Any],
+    ) -> None:
+        message_id = self._next_relay_message_id()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(tunnel.ws_url) as ws:
+                    await ws.send_json(envelope_to_json(ProtocolEnvelope.request(
+                        message_id=message_id,
+                        method=method,
+                        payload=payload,
+                    )))
+                    response = await ws.receive_json(timeout=self.route_request_timeout_seconds)
+        except Exception as exc:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("peer-tunnel-error", str(exc)),
+            ))
+            return
+        try:
+            routed = envelope_from_json(response)
+        except Exception as exc:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-target-response", str(exc)),
+            ))
+            return
+        if routed.kind == "error":
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=routed.error or ErrorInfo("target-error", "target returned an error"),
+            ))
+            return
+        await caller.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method or "hub.route.request",
+            payload=routed.payload,
         ))
 
     async def route_subscribe(self, caller: HubConnection, envelope: ProtocolEnvelope) -> None:
@@ -961,6 +1094,10 @@ class PeerRegistry:
             ))
             return None
         return target_peer_id, target_connection, method, payload
+
+    def _peer_is_online(self, peer_id: str) -> bool:
+        peer = self.peers.get(peer_id)
+        return bool(peer and peer.get("online") is True and peer.get("status") == "online")
 
     async def _fail_target_routes(self, target: HubConnection, code: str, message: str) -> None:
         for target_message_id, routed in list(self.routed_requests.items()):

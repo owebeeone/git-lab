@@ -50,6 +50,21 @@ class WorkspaceConfig:
 
 
 @dataclass(frozen=True)
+class HubConfig:
+    url: str | None = None
+    heartbeat_interval_ms: int = 1000
+
+    @classmethod
+    def from_json(cls, value: dict[str, Any]) -> "HubConfig":
+        url_value = value.get("url")
+        url = str(url_value) if url_value else None
+        heartbeat_interval_ms = int(value.get("heartbeatIntervalMs", 1000))
+        if heartbeat_interval_ms <= 0:
+            raise ValueError("hub.heartbeatIntervalMs must be positive")
+        return cls(url=url, heartbeat_interval_ms=heartbeat_interval_ms)
+
+
+@dataclass(frozen=True)
 class ServiceConfig:
     self_peer_id: str = "me"
     mode: str = "client"
@@ -57,6 +72,7 @@ class ServiceConfig:
     workspace: WorkspaceConfig = field(
         default_factory=lambda: WorkspaceConfig("local-main", Path(".").resolve()),
     )
+    hub: HubConfig = field(default_factory=HubConfig)
     peers: list[dict[str, Any]] = field(default_factory=list)
     path: Path | None = None
 
@@ -74,6 +90,7 @@ class ServiceConfig:
             mode=mode,
             listen=ListenConfig.from_json(dict(value.get("listen", {}))),
             workspace=WorkspaceConfig.from_json(dict(value.get("workspace", {})), base_dir=base_dir),
+            hub=HubConfig.from_json(dict(value.get("hub", {}))),
             peers=list(value.get("peers", [])),
             path=path,
         )

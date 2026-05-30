@@ -12,6 +12,7 @@ from urllib.request import urlopen
 
 from .config import load_config
 from .hub import HubServer
+from .hub_registration import HubRegistrationClient
 from .local_client import LocalClientServer
 
 
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_client(config_path: Path) -> int:
     config = load_config(config_path)
     server = LocalClientServer(config)
+    hub_registration = HubRegistrationClient(config)
     stop_event = threading.Event()
 
     def stop(_signum: int, _frame: object) -> None:
@@ -42,8 +44,10 @@ def run_client(config_path: Path) -> int:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
     server.start()
+    hub_registration.start()
     print(json.dumps({"ok": True, "url": server.url}, sort_keys=True), flush=True)
     stop_event.wait()
+    hub_registration.stop()
     server.stop()
     return 0
 

@@ -7,7 +7,9 @@ from filedelta import LineWindow, make_text_window_snapshot, text_window_snapsho
 
 from griplab_service.config import load_config
 from griplab_service.hub import HubServer
-from griplab_service.hub.app import PeerRegistry
+from griplab_service.hub.app import REGISTRY_KEY, PeerRegistry
+from griplab_service.local_client import LocalClientServer
+from test_local_client import write_config
 
 
 def write_hub_config(tmp_path: Path) -> Path:
@@ -70,10 +72,18 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
                     assert alice["online"] is True
                     assert alice["status"] == "online"
 
+                    await client.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "peer.heartbeat",
+                        "payload": {"peerId": "alice", "ts": 1},
+                    })
+                    heartbeat = await client.receive_json(timeout=2)
+                    assert heartbeat["kind"] == "response"
+                    assert heartbeat["payload"] == {"ok": True}
+
                     await client.close(code=WSCloseCode.GOING_AWAY)
-                    offline = await watcher.receive_json(timeout=2)
-                    peers = offline["payload"]["payload"]["peers"]
-                    alice = next(peer for peer in peers if peer["id"] == "alice")
+                    alice = await receive_presence_with(watcher, "alice", False)
                     assert alice["online"] is False
                     assert alice["status"] == "offline"
         finally:
@@ -288,6 +298,52 @@ def test_hub_routes_request_to_target_peer(tmp_path: Path) -> None:
                     await target.close()
         finally:
             server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routes_request_through_registered_tunnel(tmp_path: Path) -> None:
+    async def run() -> None:
+        hub_root = tmp_path / "hub"
+        hub_root.mkdir()
+        local_root = tmp_path / "local-peer"
+        local_root.mkdir()
+        hub_config = load_config(write_hub_config(hub_root))
+        local_config_path = write_config(local_root)
+        local_value = json.loads(local_config_path.read_text(encoding="utf-8"))
+        local_value["selfPeerId"] = "target"
+        local_config_path.write_text(json.dumps(local_value), encoding="utf-8")
+        local_config = load_config(local_config_path)
+        hub = HubServer(hub_config)
+        local = LocalClientServer(local_config)
+        hub.start()
+        local.start()
+        try:
+            assert hub._runner is not None
+            registry = hub._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
+            registry.register_tunnel("target", local_peer_port=int(local.url.rsplit(":", 1)[1]))
+            async with ClientSession() as session:
+                async with session.ws_connect(hub.ws_url) as caller:
+                    target = await session.ws_connect(hub.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.request",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "deps.get",
+                            "payload": {},
+                        },
+                    })
+                    response = await caller.receive_json(timeout=2)
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"repos": [""], "edges": [], "errors": {}}
+                    await target.close()
+        finally:
+            local.stop()
+            hub.stop()
 
     asyncio.run(run())
 
@@ -578,6 +634,16 @@ async def hello_peer(ws: object, peer_id: str) -> None:
     response = await ws.receive_json(timeout=2)
     assert response["kind"] == "response"
     assert response["payload"] == {"peerId": peer_id}
+
+
+async def receive_presence_with(ws: object, peer_id: str, online: bool) -> dict[str, object]:
+    for _ in range(20):
+        message = await ws.receive_json(timeout=2)
+        peers = message["payload"]["payload"]["peers"]
+        peer = next((item for item in peers if item["id"] == peer_id), None)
+        if peer is not None and peer["online"] is online:
+            return peer
+    raise AssertionError(f"presence for {peer_id} did not reach online={online}")
 
 
 async def send_file_snapshot(ws: object, routed_request: dict, resource_id: str, data: bytes, file_version: str) -> None:
