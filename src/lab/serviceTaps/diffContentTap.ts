@@ -34,22 +34,22 @@ interface FileKey {
 export function createServiceDiffContentTap(client: ServiceClient = defaultServiceClient): Tap {
   return createAsyncStreamMultiTap<DiffOuts, ServiceStreamEvent>({
     provides: [DIFF_HUNKS, DIFF_DIAGNOSTICS, DIFF_STREAM_STATUS, DIFF_VERSION],
-    destinationParamGrips: [ACTIVE_FILE, SELECTED_FILE, DIFF_LEFT, DIFF_RIGHT, DIFF_WINDOW],
-    homeParamGrips: [SELECTED_PEER_ID],
+    destinationParamGrips: [ACTIVE_FILE, DIFF_WINDOW],
+    homeParamGrips: [SELECTED_PEER_ID, SELECTED_FILE, DIFF_LEFT, DIFF_RIGHT],
     requestKeyOf: (params) => {
       const activeFile = diffActiveFile(params);
       if (!activeFile) return undefined;
       const selectedPeerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
-      const left = effectiveEndpoint(params.getDestParam(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!, selectedPeerId);
-      const right = effectiveEndpoint(params.getDestParam(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!, selectedPeerId);
+      const left = effectiveEndpoint(params.getHomeParam(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!, selectedPeerId);
+      const right = effectiveEndpoint(params.getHomeParam(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!, selectedPeerId);
       const window = params.getDestParam(DIFF_WINDOW) ?? { lineStart: 0, lineEnd: 400 };
       return diffRequestKey(params.destContext.id, activeFile, left, right, window);
     },
     subscribe: (params, signal) => {
       const activeFile = diffActiveFile(params);
       const selectedPeerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
-      const left = effectiveEndpoint(params.getDestParam(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!, selectedPeerId);
-      const right = effectiveEndpoint(params.getDestParam(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!, selectedPeerId);
+      const left = effectiveEndpoint(params.getHomeParam(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!, selectedPeerId);
+      const right = effectiveEndpoint(params.getHomeParam(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!, selectedPeerId);
       const window = params.getDestParam(DIFF_WINDOW) ?? { lineStart: 0, lineEnd: 400 };
       const file = splitFileKey(activeFile);
       return client.subscribe('diff.subscribe', {
@@ -111,7 +111,7 @@ function endpointPayload(endpoint: DiffEndpoint, file: FileKey): ServiceDiffEndp
 }
 
 function diffActiveFile(params: DestinationParams): string {
-  return String(params.getDestParam(SELECTED_FILE) ?? params.getDestParam(ACTIVE_FILE) ?? '');
+  return String(params.getHomeParam(SELECTED_FILE) ?? params.getDestParam(ACTIVE_FILE) ?? '');
 }
 
 function effectiveEndpoint(endpoint: DiffEndpoint, selectedPeerId: string): DiffEndpoint {
