@@ -27,6 +27,7 @@ DEFAULT_TREE_IGNORE_NAMES = frozenset({
     "__pycache__",
     "dist",
     "node_modules",
+    "scratch",
     "venv",
 })
 

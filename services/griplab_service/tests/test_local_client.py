@@ -219,6 +219,8 @@ def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
     (config.workspace.root / ".griplab" / "client.json").write_text("{}\n", encoding="utf-8")
     (config.workspace.root / "node_modules").mkdir()
     (config.workspace.root / "node_modules" / "ignored.js").write_text("nope\n", encoding="utf-8")
+    (config.workspace.root / "scratch").mkdir()
+    (config.workspace.root / "scratch" / "trace.jsonl").write_text("{}\n", encoding="utf-8")
 
     payload = tree_snapshot_payload(config.workspace.root)
     paths = {entry["path"] for entry in payload["entries"]}
@@ -227,6 +229,7 @@ def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
     assert "src/app.py" in paths
     assert "client.json" not in paths
     assert "node_modules/ignored.js" not in paths
+    assert "scratch/trace.jsonl" not in paths
     assert payload["version"]
 
 

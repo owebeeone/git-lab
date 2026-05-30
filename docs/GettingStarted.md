@@ -231,6 +231,9 @@ When tracing is enabled, JSONL events are also appended to:
 scratch/griplab-perf.jsonl
 ```
 
+The file tree service ignores `scratch/`, so writing trace files there does not
+trigger tree watcher rebuilds.
+
 Override that path with `GRIPLAB_TRACE_FILE`:
 
 ```bash
