@@ -151,6 +151,7 @@ class HubRegistrationClient:
         capabilities = dict(probe.get("capabilities", {}))
         workspace = dict(probe.get("workspace", {}))
         shells = capabilities.get("shells", [])
+        client_payload = self._client_payload_manifest()
         return {
             "peerId": self.config.self_peer_id,
             "name": self.config.self_peer_id,
@@ -159,6 +160,7 @@ class HubRegistrationClient:
             "shells": [str(shell) for shell in shells] if isinstance(shells, list) else [],
             "isSelf": self.config.self_peer_id == "me",
             "workspaceId": self.config.workspace.workspace_id,
+            "clientPayload": client_payload,
         }
 
     def _config_local_ws_url(self) -> str:
@@ -166,3 +168,15 @@ class HubRegistrationClient:
         if host in {"0.0.0.0", "::"}:
             host = "127.0.0.1"
         return f"ws://{host}:{self.config.listen.port}/ws"
+
+    def _client_payload_manifest(self) -> dict[str, Any]:
+        if self.config.path is None:
+            return {}
+        manifest = self.config.path.parent / "client_payload.json"
+        if not manifest.exists():
+            return {}
+        try:
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, dict) else {}

@@ -640,23 +640,46 @@ class PeerRegistry:
     def reconcile_collaborator(self, peer_id: str) -> None:
         if self.bootstrap_worker is None:
             return
-        if peer_id in self.peers and self.peers[peer_id].get("online") is True:
-            return
         current = self.bootstrap_tasks.get(peer_id)
         if current is not None and not current.done():
             return
         collaborator = self.collaborators.get(peer_id)
         if collaborator is None:
             return
+        peer_online = peer_id in self.peers and self.peers[peer_id].get("online") is True
         self.bootstrap_states[peer_id] = {
             "status": "starting",
-            "summary": "Bootstrap started",
+            "summary": "Refreshing client payload" if peer_online else "Bootstrap started",
             "updatedAt": int(time.time() * 1000),
-            "checks": [{"id": "bootstrap", "status": "pending", "summary": "Bootstrap is running"}],
+            "checks": [{
+                "id": "bootstrap",
+                "status": "pending",
+                "summary": "Refreshing copied client payload" if peer_online else "Bootstrap is running",
+            }],
             "logPath": str(self.bootstrap_worker.log_root / f"{peer_id}.log") if self.bootstrap_worker.log_root is not None else None,
         }
         self.publish()
-        self.bootstrap_tasks[peer_id] = asyncio.create_task(self._run_bootstrap(collaborator))
+        if peer_online:
+            self.bootstrap_tasks[peer_id] = asyncio.create_task(self._run_prepare(collaborator))
+        else:
+            self.bootstrap_tasks[peer_id] = asyncio.create_task(self._run_bootstrap(collaborator))
+
+    async def _run_prepare(self, collaborator: CollaboratorRecord) -> None:
+        assert self.bootstrap_worker is not None
+        payload = collaborator.to_json()
+        payload["remoteHubPort"] = self._remote_hub_port_for(collaborator.peer_id)
+        payload["remoteClientPort"] = self._remote_client_port_for(collaborator.peer_id)
+        try:
+            result = await asyncio.to_thread(self.bootstrap_worker.prepare, payload)
+            result = {
+                **result,
+                "status": "starting" if result.get("ok", False) else "error",
+                "summary": "Remote client payload refreshed" if result.get("ok", False) else str(result.get("error", "remote preparation failed")),
+            }
+        except Exception as exc:
+            result = {"ok": False, "peerId": collaborator.peer_id, "status": "error", "summary": str(exc)}
+        self.bootstrap_states[collaborator.peer_id] = self._bootstrap_state_from_result(collaborator.peer_id, result)
+        self.publish()
 
     async def _run_bootstrap(self, collaborator: CollaboratorRecord) -> None:
         assert self.bootstrap_worker is not None
@@ -764,7 +787,9 @@ class PeerRegistry:
             if str(peer.get("id", "")) == peer_id:
                 if peer_id in self.bootstrap_states and peer.get("online") is not True:
                     return {"health": self._bootstrap_health(peer_id, peer)}
-                return {"health": health_for_presence(peer)}
+                health = health_for_presence(peer)
+                self._append_client_payload_health(peer_id, peer, health)
+                return {"health": health}
         return {
             "health": {
                 "peerId": peer_id,
@@ -835,6 +860,44 @@ class PeerRegistry:
             "checks": checks,
             "updatedAt": int(state.get("updatedAt", int(time.time() * 1000))),
         }
+
+    def _append_client_payload_health(
+        self,
+        peer_id: str,
+        peer: dict[str, object],
+        health: dict[str, object],
+    ) -> None:
+        checks = health.get("checks")
+        if not isinstance(checks, list):
+            return
+        state = self.bootstrap_states.get(peer_id, {})
+        result = state.get("result", {})
+        expected_payload = result.get("clientPayload", {}) if isinstance(result, dict) else {}
+        expected_hash = str(expected_payload.get("payloadHash", "")) if isinstance(expected_payload, dict) else ""
+        actual_payload = peer.get("clientPayload", {})
+        actual_hash = str(actual_payload.get("payloadHash", "")) if isinstance(actual_payload, dict) else ""
+        if not expected_hash and not actual_hash:
+            checks.append({
+                "id": "client-payload",
+                "status": "pending",
+                "summary": "Client payload fingerprint is not available yet",
+            })
+            return
+        if expected_hash and actual_hash == expected_hash:
+            checks.append({
+                "id": "client-payload",
+                "status": "ok",
+                "summary": f"Running copied payload {actual_hash}",
+            })
+            return
+        summary = "Remote client payload is out of sync"
+        if expected_hash:
+            summary += f"; expected {expected_hash}"
+        if actual_hash:
+            summary += f", running {actual_hash}"
+        else:
+            summary += ", running client did not report a payload hash"
+        checks.append({"id": "client-payload", "status": "error", "summary": summary})
 
     def _append_log_checks(self, checks: list[dict[str, object]], logs: dict[str, object]) -> None:
         remote = logs.get("remote", {})

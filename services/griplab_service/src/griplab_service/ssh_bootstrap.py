@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import hashlib
 import json
 import time
 from contextlib import contextmanager
@@ -63,6 +64,7 @@ class RemotePrepareResult:
     peer_id: str
     diagnostics: dict[str, object]
     forward: dict[str, object]
+    client_payload: dict[str, object] | None = None
     error: str | None = None
 
     def to_json(self) -> dict[str, object]:
@@ -72,6 +74,8 @@ class RemotePrepareResult:
             "diagnostics": self.diagnostics,
             "forward": self.forward,
         }
+        if self.client_payload is not None:
+            result["clientPayload"] = self.client_payload
         if self.error:
             result["error"] = self.error
         return result
@@ -332,16 +336,16 @@ def prepare_remote_client(
             payload_root = temp_dir / "client_payload"
             client_json = remote_client_config(payload, plan)
             forward_json = plan.to_json()
-            payload_json = selected_client_payload(diagnostics)
             write_json(temp_dir / "client.json", client_json)
             write_json(temp_dir / "forward.json", forward_json)
+            payload_hash = build_local_client_payload(payload_root)
+            payload_json = selected_client_payload(diagnostics, payload_hash)
             write_json(temp_dir / "client_payload.json", payload_json)
-            build_local_client_payload(payload_root)
             for filename in ("client.json", "forward.json", "client_payload.json"):
                 _run_scp(payload, temp_dir / filename, f"{target.destination()}:{remote_home}/{filename}", timeout=timeout)
             _run_ssh(payload, f"rm -rf {shlex.quote(remote_client_payload_dir(payload))}", timeout=timeout)
             _run_scp_recursive(payload, payload_root, f"{target.destination()}:{remote_home}/", timeout=timeout)
-        return RemotePrepareResult(True, peer_id, diagnostics, plan.to_json()).to_json()
+        return RemotePrepareResult(True, peer_id, diagnostics, plan.to_json(), payload_json).to_json()
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         forward = plan.to_json() if "plan" in locals() else {}
         return RemotePrepareResult(False, peer_id, {}, forward, str(exc)).to_json()
@@ -431,11 +435,12 @@ def remote_client_config(payload: dict[str, Any], plan: ForwardPlan) -> dict[str
     }
 
 
-def selected_client_payload(diagnostics: dict[str, object]) -> dict[str, object]:
+def selected_client_payload(diagnostics: dict[str, object], payload_hash: str) -> dict[str, object]:
     return {
         "kind": "griplab-client-placeholder",
         "os": diagnostics.get("os", "unknown"),
         "arch": diagnostics.get("arch", "unknown"),
+        "payloadHash": payload_hash,
         "updatedBy": "hub-bootstrap",
     }
 
@@ -657,7 +662,7 @@ def default_remote_client_command(config_path: str = ".griplab/client.json") -> 
     ])
 
 
-def build_local_client_payload(destination: Path) -> None:
+def build_local_client_payload(destination: Path) -> str:
     services_root = local_griplab_root() / "services"
     payload_services = destination / "services"
     payload_services.mkdir(parents=True, exist_ok=True)
@@ -673,6 +678,18 @@ def build_local_client_payload(destination: Path) -> None:
                 "*.egg-info",
             ),
         )
+    return directory_hash(destination)
+
+
+def directory_hash(root: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return "sha256:" + digest.hexdigest()
 
 
 def local_griplab_root() -> Path:

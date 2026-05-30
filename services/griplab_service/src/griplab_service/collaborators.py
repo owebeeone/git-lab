@@ -153,6 +153,7 @@ def connected_presence(payload: dict[str, Any]) -> dict[str, object]:
         "status": "online",
         "summary": "Connected",
         "lastSeenAt": int(time.time() * 1000),
+        "clientPayload": dict(payload.get("clientPayload", {})) if isinstance(payload.get("clientPayload"), dict) else {},
     }
 
 

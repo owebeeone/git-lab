@@ -219,6 +219,8 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
         assert '"remoteClientPort": 3142' in forward.stdout
         assert payload_file.returncode == 0
         assert "griplab-client-placeholder" in payload_file.stdout
+        assert "sha256:" in payload_file.stdout
+        assert str(result["clientPayload"]["payloadHash"]).startswith("sha256:")
         assert payload_dir.returncode == 0
 
 

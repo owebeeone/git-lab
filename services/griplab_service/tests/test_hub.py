@@ -188,6 +188,30 @@ def test_hub_assigns_distinct_remote_hub_ports_per_collaborator(tmp_path: Path) 
     assert registry._remote_client_port_for("weftpi") == 3141
 
 
+def test_hub_peer_health_reports_stale_client_payload(tmp_path: Path) -> None:
+    config = load_config(write_hub_config(tmp_path))
+    registry = PeerRegistry(config)
+    registry.bootstrap_states["alice"] = {
+        "status": "starting",
+        "summary": "Bootstrap started",
+        "updatedAt": 1,
+        "checks": [],
+        "result": {"clientPayload": {"payloadHash": "sha256:new"}},
+    }
+    registry.hello({
+        "peerId": "alice",
+        "name": "Alice",
+        "location": "~/work/project",
+        "clientPayload": {"payloadHash": "sha256:old"},
+    })
+
+    health = registry.peer_health({"peerId": "alice"})["health"]
+    check = next(item for item in health["checks"] if item["id"] == "client-payload")
+
+    assert check["status"] == "error"
+    assert "out of sync" in check["summary"]
+
+
 def test_hub_chat_post_subscribe_and_persist_order(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_hub_config(tmp_path))
