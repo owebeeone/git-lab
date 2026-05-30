@@ -21,6 +21,7 @@ import {
   CHAT_PANEL_DRAGGING, CHAT_PANEL_DRAGGING_TAP,
   CHAT_COMPOSER_H, CHAT_COMPOSER_H_TAP,
   CHAT_COMPOSER_DRAG, CHAT_COMPOSER_DRAG_TAP,
+  FILE_WINDOW, FILE_WINDOW_TAP,
   EXPLORER_COLLAPSED, EXPLORER_COLLAPSED_TAP,
   EXPLORER_OPEN, EXPLORER_OPEN_TAP,
   EXPLORER_WIDTH, EXPLORER_WIDTH_TAP,
@@ -73,6 +74,7 @@ export function registerLabUiTaps() {
   grok.registerTap(createAtomValueTap(CHAT_PANEL_DRAGGING, { initial: CHAT_PANEL_DRAGGING.defaultValue!, handleGrip: CHAT_PANEL_DRAGGING_TAP }));
   grok.registerTap(createAtomValueTap(CHAT_COMPOSER_H, { initial: CHAT_COMPOSER_H.defaultValue!, handleGrip: CHAT_COMPOSER_H_TAP }));
   grok.registerTap(createAtomValueTap(CHAT_COMPOSER_DRAG, { initial: CHAT_COMPOSER_DRAG.defaultValue ?? null, handleGrip: CHAT_COMPOSER_DRAG_TAP }));
+  grok.registerTap(createAtomValueTap(FILE_WINDOW, { initial: FILE_WINDOW.defaultValue!, handleGrip: FILE_WINDOW_TAP }));
   grok.registerTap(createAtomValueTap(EXPLORER_COLLAPSED, { initial: EXPLORER_COLLAPSED.defaultValue!, handleGrip: EXPLORER_COLLAPSED_TAP }));
   grok.registerTap(createAtomValueTap(EXPLORER_OPEN, { initial: EXPLORER_OPEN.defaultValue!, handleGrip: EXPLORER_OPEN_TAP }));
   grok.registerTap(createAtomValueTap(EXPLORER_WIDTH, { initial: EXPLORER_WIDTH.defaultValue!, handleGrip: EXPLORER_WIDTH_TAP }));

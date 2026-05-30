@@ -1,13 +1,12 @@
 import { createFunctionTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
 import {
-  FILE_CONTENT,
-  FILE_GIT_STATUS,
   GRAPH_NODES,
   SESSION_DIAGNOSTICS,
   SESSION_OUTPUT,
 } from './grips';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
+import { createServiceFileContentTap } from './serviceTaps/fileContentTap';
 import { createServiceTreeTap } from './serviceTaps/treeTap';
 import { createServiceWorkspaceStatusTap } from './serviceTaps/workspaceStatusTap';
 import { createServiceStateTap } from './serviceStateTap';
@@ -17,14 +16,6 @@ function registerServicePlaceholderTaps() {
   grok.registerTap(createFunctionTap({
     provides: [GRAPH_NODES],
     compute: () => new Map([[GRAPH_NODES, []]]),
-  }) as unknown as Tap);
-
-  grok.registerTap(createFunctionTap({
-    provides: [FILE_CONTENT, FILE_GIT_STATUS],
-    compute: () => new Map([
-      [FILE_CONTENT, ''],
-      [FILE_GIT_STATUS, 'clean'],
-    ]),
   }) as unknown as Tap);
 
   grok.registerTap(createFunctionTap({
@@ -45,5 +36,6 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceWorkspaceStatusTap());
   grok.registerTap(createServiceDepsGraphTap());
   grok.registerTap(createServiceTreeTap());
+  grok.registerTap(createServiceFileContentTap());
   registerServicePlaceholderTaps();
 }

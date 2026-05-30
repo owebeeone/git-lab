@@ -1,7 +1,8 @@
-import { useGrip, useChildContext, useAtomValueTap } from '@owebeeone/grip-react';
+import { useGrip, useKeyedChildContext, useAtomValueTap } from '@owebeeone/grip-react';
 import {
   SELECTED_PEER_ID, PEERS, FOCUS_LINE,
   FILE_REF, FILE_REF_TAP, ACTIVE_FILE, ACTIVE_FILE_TAP, FILE_CONTENT, FILE_GIT_STATUS,
+  FILE_WINDOW, FILE_WINDOW_TAP, FILE_STREAM_STATUS,
 } from '../grips';
 import type { EditorGroup, FileRef, Peer } from '../types';
 import { Highlighted } from '../highlight';
@@ -41,18 +42,18 @@ function EditorColumn(props: {
   // Per-view child grip-context. We publish this column's destination params
   // (ACTIVE_FILE, FILE_REF) into it; the FileContentTap reads them and provides
   // FILE_CONTENT / FILE_GIT_STATUS for this specific destination context.
-  // (useChildContext is typed GripContextLike; useAtomValueTap wants the
-  // concrete GripContext, which isn't exported — the runtime value is correct.)
-  const ctx = useChildContext();
+  const ctx = useKeyedChildContext(`files:${group.id}`);
   // ACTIVE_FILE tracks the column's active tab; changing it re-runs the content
   // tap for this destination (initial is a memo dep, so it updates on change).
   useAtomValueTap(ACTIVE_FILE, { ctx: ctx as never, initial: group.active ?? '', tapGrip: ACTIVE_FILE_TAP });
   useAtomValueTap(FILE_REF, { ctx: ctx as never, initial: 'working', tapGrip: FILE_REF_TAP });
+  useAtomValueTap(FILE_WINDOW, { ctx: ctx as never, initial: { lineStart: 0, lineEnd: 400 }, tapGrip: FILE_WINDOW_TAP });
 
   const ref = useGrip(FILE_REF, ctx) ?? 'working';
   const refTap = useGrip(FILE_REF_TAP, ctx);
   const code = useGrip(FILE_CONTENT, ctx) ?? '';
   const gitStatus = useGrip(FILE_GIT_STATUS, ctx) ?? 'clean';
+  const streamStatus = useGrip(FILE_STREAM_STATUS, ctx) ?? { status: 'idle', error: null };
 
   const active = group.active;
   const info = active ? splitKey(active) : null;
@@ -94,6 +95,7 @@ function EditorColumn(props: {
                   ⠿ {info.repoPath}/{info.path}{peer && !peer.isSelf ? ` @${peer.name}` : ''}
                 </span>
                 <span className={`state ${gitStatus === 'clean' ? 'clean' : 'dirty'}`}>{gitStatus}</span>
+                {streamStatus.status === 'error' && <span className="state dirty">{streamStatus.error}</span>}
                 <span className="spacer" />
               <div className="ref-toggle">
                 {(['working', 'head'] as FileRef[]).map((r) => (

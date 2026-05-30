@@ -215,6 +215,120 @@ def test_tree_stream_ignores_ignored_path_changes(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_file_stream_sends_snapshot_and_delta_on_local_edit(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "file.subscribe",
+                        "streamId": "file0001",
+                        "payload": {
+                            "repoPath": "",
+                            "path": "README.md",
+                            "ref": "working",
+                            "window": {"lineStart": 0, "lineEnd": 10},
+                        },
+                    })
+                    first = await ws.receive_json(timeout=2)
+                    assert first["kind"] == "stream-event"
+                    assert first["method"] == "file.subscribe"
+                    assert first["payload"]["event"] == "snapshot"
+                    snapshot = first["payload"]["payload"]
+                    assert snapshot["scope"] == "text-window"
+                    assert snapshot["lineStart"] == 0
+                    assert snapshot["lineEnd"] == 1
+
+                    (config.workspace.root / "README.md").write_text("hello\nchanged\n", encoding="utf-8")
+                    changed = await ws.receive_json(timeout=2)
+                    assert changed["payload"]["event"] in {"delta", "reset"}
+                    if changed["payload"]["event"] == "delta":
+                        assert changed["payload"]["payload"]["resultHash"]
+                    else:
+                        assert changed["payload"]["payload"]["snapshot"]["contentHash"]
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_file_window_update_routes_to_subscription(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "file.subscribe",
+                        "streamId": "file0001",
+                        "payload": {
+                            "repoPath": "",
+                            "path": "README.md",
+                            "ref": "working",
+                            "window": {"lineStart": 0, "lineEnd": 1},
+                        },
+                    })
+                    await ws.receive_json(timeout=2)
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "file.window.update",
+                        "payload": {
+                            "streamId": "file0001",
+                            "window": {"lineStart": 0, "lineEnd": 2},
+                        },
+                    })
+                    update = await ws.receive_json(timeout=2)
+                    response = await ws.receive_json(timeout=2)
+                    assert update["payload"]["event"] in {"delta", "reset"}
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"updated": True}
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_file_stream_reports_unsupported_ref(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "file.subscribe",
+                        "streamId": "file0001",
+                        "payload": {
+                            "repoPath": "",
+                            "path": "README.md",
+                            "ref": "head",
+                            "window": {"lineStart": 0, "lineEnd": 10},
+                        },
+                    })
+                    error = await ws.receive_json(timeout=2)
+                    assert error["kind"] == "stream-event"
+                    assert error["payload"]["event"] == "error"
+                    assert error["payload"]["payload"]["code"] == "unsupported-ref"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=100))

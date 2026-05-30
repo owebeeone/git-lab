@@ -6,10 +6,23 @@ import asyncio
 import json
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aiohttp import WSMsgType, web
+from watchdog.events import FileSystemEvent, FileSystemEventHandler
+from watchdog.observers import Observer
 
+from filedelta import (
+    FileConnection,
+    LineWindow,
+    ResetEvent,
+    TextWindowDelta,
+    TextWindowSnapshot,
+    reset_to_json,
+    text_window_delta_to_json,
+    text_window_snapshot_to_json,
+)
 from griplab_service.config import ServiceConfig
 from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
 from griplab_service.local_client.tree import TreeWatcher, tree_snapshot_payload
@@ -225,6 +238,34 @@ async def handle_protocol_message(
             payload={"stopped": stopped},
         ))
         return
+    if envelope.method == "file.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "file.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_file(envelope.message_id, envelope.stream_id, envelope.payload)
+        return
+    if envelope.method == "file.window.update":
+        stream_id = str(envelope.payload.get("streamId", ""))
+        updated = await connection.update_file_window(stream_id, envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"updated": updated},
+        ))
+        return
+    if envelope.method == "file.unsubscribe":
+        stream_id = str(envelope.payload.get("streamId", ""))
+        stopped = await connection.unsubscribe_file(stream_id)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"stopped": stopped},
+        ))
+        return
     await connection.send(ProtocolEnvelope.error_response(
         message_id=envelope.message_id,
         method=envelope.method,
@@ -252,12 +293,24 @@ class TreeStream:
     watcher: TreeWatcher | None = None
 
 
+@dataclass
+class FileStream:
+    message_id: str
+    stream_id: str
+    connection: FileConnection | None = None
+    subscription: Any | None = None
+    task: asyncio.Task[None] | None = None
+    watcher: "FileWatcher" | None = None
+    queue: asyncio.Queue[None] | None = None
+
+
 class LocalClientConnection:
     def __init__(self, config: ServiceConfig, ws: web.WebSocketResponse) -> None:
         self.config = config
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
+        self.file_streams: dict[str, FileStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -311,13 +364,59 @@ class LocalClientConnection:
         await self._close_tree_stream(stream)
         return True
 
+    async def subscribe_file(self, message_id: str, stream_id: str, payload: dict[str, Any]) -> None:
+        existing = self.file_streams.get(stream_id)
+        if existing is not None:
+            await self._close_file_stream(existing, "replaced")
+            self.file_streams.pop(stream_id, None)
+
+        stream = FileStream(message_id=message_id, stream_id=stream_id)
+        self.file_streams[stream_id] = stream
+        try:
+            source = resolve_file_source(self.config.workspace.root, payload)
+            if source["ref"] != "working":
+                await self._send_file_error(stream, "unsupported-ref", "only working-tree file streams are available")
+                return
+            window = parse_line_window(payload)
+            queue: asyncio.Queue[None] = asyncio.Queue()
+            stream.queue = queue
+            subscriber = ServiceFileSubscriber(self, stream)
+            connection = FileConnection(str(source["resource_id"]), source["path"])
+            stream.connection = connection
+            await connection.open()
+            stream.subscription = await connection.subscribe_window(subscriber, window)
+            watcher = FileWatcher(Path(source["path"]), asyncio.get_running_loop(), queue)
+            stream.watcher = watcher
+            watcher.start()
+            stream.task = asyncio.create_task(self._watch_file(stream))
+        except Exception as exc:
+            await self._send_file_error(stream, "file-open-failed", str(exc))
+
+    async def update_file_window(self, stream_id: str, payload: dict[str, Any]) -> bool:
+        stream = self.file_streams.get(stream_id)
+        if stream is None or stream.subscription is None:
+            return False
+        await stream.subscription.update_window(parse_line_window(payload))
+        return True
+
+    async def unsubscribe_file(self, stream_id: str) -> bool:
+        stream = self.file_streams.pop(stream_id, None)
+        if stream is None:
+            return False
+        await self._close_file_stream(stream, "unsubscribed")
+        return True
+
     async def close(self) -> None:
         status_tasks = [stream.task for stream in self.workspace_status_streams.values() if stream.task is not None]
         tree_streams = list(self.tree_streams.values())
+        file_streams = list(self.file_streams.values())
         self.workspace_status_streams.clear()
         self.tree_streams.clear()
+        self.file_streams.clear()
         for stream in tree_streams:
             await self._close_tree_stream(stream)
+        for stream in file_streams:
+            await self._close_file_stream(stream, "closed")
         tasks = status_tasks
         for task in tasks:
             task.cancel()
@@ -357,6 +456,47 @@ class LocalClientConnection:
                 pass
         if stream.watcher is not None:
             stream.watcher.stop()
+
+    async def _watch_file(self, stream: FileStream) -> None:
+        assert stream.queue is not None
+        assert stream.connection is not None
+        try:
+            while stream.stream_id in self.file_streams:
+                await stream.queue.get()
+                await asyncio.sleep(0.05)
+                while not stream.queue.empty():
+                    stream.queue.get_nowait()
+                await stream.connection.file_changed()
+        except asyncio.CancelledError:
+            raise
+
+    async def _close_file_stream(self, stream: FileStream, reason: str) -> None:
+        if stream.task is not None:
+            stream.task.cancel()
+            try:
+                await stream.task
+            except asyncio.CancelledError:
+                pass
+        if stream.watcher is not None:
+            stream.watcher.stop()
+        if stream.connection is not None:
+            await stream.connection.close(reason)
+
+    async def _send_file_event(self, stream: FileStream, event: str, payload: dict[str, Any]) -> None:
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="file.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=int(payload.get("seq", 0)),
+                event=event,
+                payload=payload,
+            ),
+        ))
+
+    async def _send_file_error(self, stream: FileStream, code: str, message: str) -> None:
+        await self._send_file_event(stream, "error", {"code": code, "message": message})
 
     async def _publish_workspace_status(self, stream: WorkspaceStatusStream, *, force: bool) -> bool:
         payload = workspace_status_payload(self.config)
@@ -446,3 +586,101 @@ def dependency_graph_to_json(graph: DependencyGraph) -> dict[str, object]:
         "edges": [{"source": edge.source, "target": edge.target} for edge in graph.edges],
         "errors": graph.errors,
     }
+
+
+class ServiceFileSubscriber:
+    def __init__(self, connection: LocalClientConnection, stream: FileStream) -> None:
+        self.connection = connection
+        self.stream = stream
+
+    async def on_listening(self, resource_id: str) -> None:
+        del resource_id
+
+    async def on_stop_listening(self, resource_id: str, reason: str) -> None:
+        del resource_id
+        if self.stream.stream_id not in self.connection.file_streams:
+            return
+        await self.connection._send_file_event(self.stream, "closed", {"reason": reason})
+
+    async def on_snapshot(self, snapshot: TextWindowSnapshot) -> None:
+        await self.connection._send_file_event(self.stream, "snapshot", text_window_snapshot_to_json(snapshot))
+
+    async def on_delta(self, delta: TextWindowDelta) -> None:
+        await self.connection._send_file_event(self.stream, "delta", text_window_delta_to_json(delta))
+
+    async def on_reset(self, reset: ResetEvent) -> None:
+        await self.connection._send_file_event(self.stream, "reset", reset_to_json(reset))
+
+    async def on_error(self, code: str, message: str) -> None:
+        await self.connection._send_file_error(self.stream, code, message)
+
+
+def parse_line_window(payload: dict[str, Any]) -> LineWindow:
+    window = payload.get("window", payload)
+    if not isinstance(window, dict):
+        raise ValueError("window must be an object")
+    return LineWindow(
+        line_start=int(window.get("lineStart", 0)),
+        line_end=int(window.get("lineEnd", 400)),
+    )
+
+
+def resolve_file_source(workspace_root: Path, payload: dict[str, Any]) -> dict[str, object]:
+    repo_path = str(payload.get("repoPath", ""))
+    path = str(payload.get("path", ""))
+    ref = str(payload.get("ref", "working"))
+    if not path or Path(path).is_absolute() or ".." in Path(path).parts:
+        raise ValueError("path must be a workspace-relative file path")
+    if Path(repo_path).is_absolute() or ".." in Path(repo_path).parts:
+        raise ValueError("repoPath must be relative to the workspace root")
+    repo_root = (workspace_root / repo_path).resolve()
+    file_path = (repo_root / path).resolve()
+    if not file_path.is_relative_to(repo_root):
+        raise ValueError("path escapes repo root")
+    return {
+        "resource_id": f"{repo_path}::{path}::{ref}",
+        "repo_path": repo_path,
+        "path": file_path,
+        "ref": ref,
+    }
+
+
+class FileChangeHandler(FileSystemEventHandler):
+    def __init__(self, target: Path, notify: Any) -> None:
+        self.target = target.resolve()
+        self.notify = notify
+
+    def on_any_event(self, event: FileSystemEvent) -> None:
+        paths = [Path(event.src_path)]
+        dest_path = getattr(event, "dest_path", "")
+        if dest_path:
+            paths.append(Path(dest_path))
+        if any(path.resolve() == self.target for path in paths):
+            self.notify()
+
+
+class FileWatcher:
+    def __init__(self, target: Path, loop: asyncio.AbstractEventLoop, queue: asyncio.Queue[None]) -> None:
+        self.target = target.resolve()
+        self.loop = loop
+        self.queue = queue
+        self.observer = Observer()
+        self.handler = FileChangeHandler(self.target, self._notify)
+        self._running = False
+
+    def start(self) -> None:
+        if self._running:
+            return
+        self.observer.schedule(self.handler, str(self.target.parent), recursive=False)
+        self.observer.start()
+        self._running = True
+
+    def stop(self) -> None:
+        if not self._running:
+            return
+        self.observer.stop()
+        self.observer.join(timeout=2)
+        self._running = False
+
+    def _notify(self) -> None:
+        self.loop.call_soon_threadsafe(self.queue.put_nowait, None)

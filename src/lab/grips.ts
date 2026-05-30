@@ -4,7 +4,7 @@ import type {
   ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId,
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
   CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
-  RepoStatus, DependencyEdge, WorkspaceTreeEntry,
+  RepoStatus, DependencyEdge, WorkspaceTreeEntry, LineWindow, FileStreamStatus,
 } from './types';
 import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
@@ -77,10 +77,14 @@ export const FILE_REF = defineGrip<FileRef>('Lab.FileRef', 'working');
 export const FILE_REF_TAP = defineGrip<AtomTapHandle<FileRef>>('Lab.FileRef.Tap');
 export const ACTIVE_FILE = defineGrip<string>('Lab.View.ActiveFile', '');
 export const ACTIVE_FILE_TAP = defineGrip<AtomTapHandle<string>>('Lab.View.ActiveFile.Tap');
+export const FILE_WINDOW = defineGrip<LineWindow>('Lab.View.FileWindow', { lineStart: 0, lineEnd: 400 });
+export const FILE_WINDOW_TAP = defineGrip<AtomTapHandle<LineWindow>>('Lab.View.FileWindow.Tap');
 
 // Outputs produced by the FileContentTap per destination context.
 export const FILE_CONTENT = defineGrip<string>('Lab.View.FileContent', '');
 export const FILE_GIT_STATUS = defineGrip<string>('Lab.View.FileGitStatus', 'clean');
+export const FILE_STREAM_STATUS = defineGrip<FileStreamStatus>('Lab.View.FileStreamStatus', { status: 'idle', error: null });
+export const FILE_LINE_INDEX = defineGrip<number[]>('Lab.View.FileLineIndex', []);
 export const EXPLORER_COLLAPSED = defineGrip<string[]>('Lab.ExplorerCollapsed', []);
 export const EXPLORER_COLLAPSED_TAP = defineGrip<AtomTapHandle<string[]>>('Lab.ExplorerCollapsed.Tap');
 
