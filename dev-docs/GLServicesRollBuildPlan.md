@@ -482,26 +482,26 @@ Exit criteria:
 
 Goal:
 
-- Add remote peer bootstrap/update path.
+- Add remote peer probe plus ephemeral bootstrap/forwarding path.
 
 Deliverables:
 
 - `peer.probe`
 - `peer.bootstrap`
 - parse SSH target
-- copy/install local client package
-- start remote client
+- start a caller-provided remote client command
 - establish local port forward
-- version check and auto-update
+- stop the ephemeral bootstrap process and port forward
+- persistent copy/install/version update is deferred
 - connection state reporting
-- failure states: auth failed, update failed, version mismatch
+- failure states: auth failed, remote command failed, port forward failed
 
 Verification:
 
 - local SSH fixture where available
 - command logs show bootstrap actions
 - remote service binds loopback
-- stale client update path tested with fake versions
+- bootstrap stop tears down the local forward and remote process
 
 Exit criteria:
 

@@ -539,7 +539,8 @@ Deliverables:
 - `peer.probe`.
 - `peer.bootstrap`.
 - SSH target parsing.
-- remote client install/start/update path.
+- ephemeral remote client start and local port forward path.
+- persistent remote install/update is out of scope for the first SSH slice.
 - service `probeTap.ts`.
 - `ONBOARDING_PROBE_RESULT` as the dedicated result grip. `ONBOARDING_FORM`
   remains user input state and is not overloaded with probe output.
