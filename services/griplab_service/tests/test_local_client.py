@@ -561,6 +561,85 @@ async def wait_for_query_session(ws, session_id: str) -> None:
     raise AssertionError(f"session did not finish: {session_id}")
 
 
+def test_terminal_open_input_resize_close_streams_output(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "term.open",
+                        "payload": {"argv": ["cat"], "repoPath": "", "rows": 24, "cols": 80, "peerId": "me"},
+                    })
+                    opened = await ws.receive_json(timeout=2)
+                    assert opened["kind"] == "response"
+                    session_id = opened["payload"]["sessionId"]
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "session.output.subscribe",
+                        "streamId": "output0001",
+                        "payload": {"sessionId": session_id, "repoPath": ""},
+                    })
+                    await ws.receive_json(timeout=2)
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "term.input",
+                        "payload": {"sessionId": session_id, "data": "pty-ok\n"},
+                    })
+                    input_response = await ws.receive_json(timeout=2)
+                    assert input_response["payload"] == {"written": True}
+
+                    seen = ""
+                    for _ in range(8):
+                        msg = await ws.receive_json(timeout=2)
+                        if msg["method"] == "session.output.subscribe":
+                            seen = msg["payload"]["payload"]["output"]
+                            if "pty-ok" in seen:
+                                break
+                    assert "pty-ok" in seen
+
+                    await ws.send_json({
+                        "messageId": "m000004",
+                        "kind": "request",
+                        "method": "term.resize",
+                        "payload": {"sessionId": session_id, "rows": 40, "cols": 100},
+                    })
+                    resize_response = await receive_response(ws, "m000004")
+                    assert resize_response["payload"] == {"resized": True}
+
+                    await ws.send_json({
+                        "messageId": "m000005",
+                        "kind": "request",
+                        "method": "term.close",
+                        "payload": {"sessionId": session_id},
+                    })
+                    close_response = await receive_response(ws, "m000005")
+                    assert close_response["payload"] == {"closed": True}
+
+                    session_dir = config.workspace.root / ".grip-lab" / "sessions" / session_id
+                    assert "pty-ok" in (session_dir / "t000001" / "output.log").read_text(encoding="utf-8")
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+async def receive_response(ws, message_id: str) -> dict:
+    for _ in range(10):
+        msg = await ws.receive_json(timeout=2)
+        if msg.get("kind") == "response" and msg.get("messageId") == message_id:
+            return msg
+    raise AssertionError(f"response not received: {message_id}")
+
+
 def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=100))

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import os
 import re
+import signal
+import struct
+import termios
 import threading
 import time
 from dataclasses import dataclass
@@ -303,6 +308,38 @@ async def handle_protocol_message(
             message_id=envelope.message_id,
             method=envelope.method,
             payload=connection.session_manager.query(envelope.payload),
+        ))
+        return
+    if envelope.method == "term.open":
+        session_id = await connection.session_manager.open_terminal(envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"sessionId": session_id},
+        ))
+        return
+    if envelope.method == "term.input":
+        written = connection.session_manager.terminal_input(envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"written": written},
+        ))
+        return
+    if envelope.method == "term.resize":
+        resized = connection.session_manager.terminal_resize(envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"resized": resized},
+        ))
+        return
+    if envelope.method == "term.close":
+        closed = await connection.session_manager.terminal_close(envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"closed": closed},
         ))
         return
     await connection.send(ProtocolEnvelope.error_response(
@@ -850,6 +887,15 @@ class CommandSessionState:
     hidden: bool = False
 
 
+@dataclass
+class TerminalProcess:
+    session_id: str
+    target: RepoRunState
+    master_fd: int
+    process: asyncio.subprocess.Process
+    read_task: asyncio.Task[None]
+
+
 class SessionManager:
     def __init__(self, config: ServiceConfig) -> None:
         self.config = config
@@ -858,6 +904,7 @@ class SessionManager:
         self.sessions: list[CommandSessionState] = load_sessions(self.sessions_root)
         self.session_subscribers: set[asyncio.Queue[None]] = set()
         self.output_subscribers: dict[tuple[str, str], set[asyncio.Queue[None]]] = {}
+        self.terminals: dict[str, TerminalProcess] = {}
         self._index = len(self.sessions)
 
     def add_sessions_subscriber(self) -> asyncio.Queue[None]:
@@ -904,6 +951,75 @@ class SessionManager:
         for target in session.targets:
             asyncio.create_task(self._run_target(session, target))
         return session_id
+
+    async def open_terminal(self, payload: dict[str, Any]) -> str:
+        argv = parse_terminal_argv(payload)
+        repo_path = str(payload.get("repoPath", ""))
+        if Path(repo_path).is_absolute() or ".." in Path(repo_path).parts:
+            raise ValueError("repoPath must stay within the workspace")
+        peer_id = str(payload.get("peerId", self.config.self_peer_id))
+        cols = int(payload.get("cols", 120))
+        rows = int(payload.get("rows", 30))
+        self._index += 1
+        session_id = f"term-{int(time.time() * 1000)}-{self._index:04d}"
+        target = RepoRunState(target_id="t000001", repo_path=repo_path, exit_code=None)
+        session = CommandSessionState(
+            id=session_id,
+            peer_id=peer_id,
+            argv=argv,
+            started_at=int(time.time() * 1000),
+            targets=[target],
+            interactive=True,
+        )
+        self.sessions.insert(0, session)
+        self._persist_session(session)
+        self._append_event(session.id, {"event": "terminalOpened", "sessionId": session.id, "targetId": target.target_id})
+        master_fd, slave_fd = os.openpty()
+        set_pty_size(master_fd, rows, cols)
+        cwd = (self.config.workspace.root / repo_path).resolve()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd),
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                preexec_fn=os.setsid,
+            )
+        finally:
+            os.close(slave_fd)
+        read_task = asyncio.create_task(self._read_terminal(session, target, master_fd))
+        self.terminals[session_id] = TerminalProcess(
+            session_id=session_id,
+            target=target,
+            master_fd=master_fd,
+            process=process,
+            read_task=read_task,
+        )
+        self._publish_sessions()
+        return session_id
+
+    def terminal_input(self, payload: dict[str, Any]) -> bool:
+        terminal = self.terminals.get(str(payload.get("sessionId", "")))
+        data = payload.get("data")
+        if terminal is None or not isinstance(data, str):
+            return False
+        os.write(terminal.master_fd, data.encode("utf-8"))
+        return True
+
+    def terminal_resize(self, payload: dict[str, Any]) -> bool:
+        terminal = self.terminals.get(str(payload.get("sessionId", "")))
+        if terminal is None:
+            return False
+        set_pty_size(terminal.master_fd, int(payload.get("rows", 30)), int(payload.get("cols", 120)))
+        return True
+
+    async def terminal_close(self, payload: dict[str, Any]) -> bool:
+        terminal = self.terminals.get(str(payload.get("sessionId", "")))
+        if terminal is None:
+            return False
+        await self._close_terminal(terminal)
+        return True
 
     def sessions_json(self) -> list[dict[str, object]]:
         return [session_to_json(session) for session in self.sessions]
@@ -996,6 +1112,56 @@ class SessionManager:
             self._publish_output(session.id, target.repo_path)
             self._publish_sessions()
 
+    async def _read_terminal(self, session: CommandSessionState, target: RepoRunState, master_fd: int) -> None:
+        try:
+            while True:
+                try:
+                    chunk = await asyncio.to_thread(os.read, master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                self._append_output(session.id, target, chunk.decode("utf-8", errors="replace"))
+                self._publish_output(session.id, target.repo_path)
+        finally:
+            terminal = self.terminals.pop(session.id, None)
+            if terminal is not None:
+                await terminal.process.wait()
+                target.exit_code = terminal.process.returncode
+                target.duration_ms = int(time.time() * 1000 - session.started_at)
+                safe_close_fd(master_fd)
+                self._append_event(session.id, {
+                    "event": "terminalClosed",
+                    "sessionId": session.id,
+                    "targetId": target.target_id,
+                    "exitCode": target.exit_code,
+                    "durationMs": target.duration_ms,
+                })
+                self._persist_session(session)
+                self._publish_output(session.id, target.repo_path)
+                self._publish_sessions()
+
+    async def _close_terminal(self, terminal: TerminalProcess) -> None:
+        if terminal.process.returncode is None:
+            try:
+                os.killpg(terminal.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        safe_close_fd(terminal.master_fd)
+        try:
+            await asyncio.wait_for(terminal.read_task, timeout=2)
+        except asyncio.TimeoutError:
+            if terminal.process.returncode is None:
+                try:
+                    os.killpg(terminal.process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            terminal.read_task.cancel()
+            try:
+                await terminal.read_task
+            except asyncio.CancelledError:
+                pass
+
     def _find_target(self, session_id: str, repo_path: str) -> RepoRunState | None:
         session = next((item for item in self.sessions if item.id == session_id), None)
         if not session:
@@ -1053,6 +1219,14 @@ def parse_repo_paths(payload: dict[str, Any]) -> list[str]:
         if Path(repo).is_absolute() or ".." in Path(repo).parts:
             raise ValueError("repo paths must stay within the workspace")
     return result
+
+
+def parse_terminal_argv(payload: dict[str, Any]) -> list[str]:
+    argv = payload.get("argv")
+    if isinstance(argv, list) and argv and all(isinstance(item, str) and item for item in argv):
+        return list(argv)
+    shell = os.environ.get("SHELL", "/bin/sh")
+    return [shell, "-l"]
 
 
 def session_to_json(session: CommandSessionState) -> dict[str, object]:
@@ -1157,3 +1331,16 @@ def atomic_write_json(path: Path, value: dict[str, object]) -> None:
 
 def safe_store_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", value) or "_"
+
+
+def set_pty_size(fd: int, rows: int, cols: int) -> None:
+    rows = max(1, rows)
+    cols = max(1, cols)
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def safe_close_fd(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
