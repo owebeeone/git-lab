@@ -35,7 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
 def run_client(config_path: Path) -> int:
     config = load_config(config_path)
     server = LocalClientServer(config)
-    hub_registration = HubRegistrationClient(config)
+    hub_registration = HubRegistrationClient(config, local_ws_url=server.ws_url)
     stop_event = threading.Event()
 
     def stop(_signum: int, _frame: object) -> None:
