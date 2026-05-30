@@ -190,6 +190,7 @@ export default function SessionsView() {
   const terminalContent = activeTarget
     ? (activeTarget.exitCode == null && outputMatchesActive ? (output || activeTarget.output) : activeTarget.output)
     : '';
+  const terminalInteractive = !!(current?.interactive && activeTarget?.exitCode == null);
 
   const toggleRepo = (repoPath: string) => {
     runReposTap?.set(runRepos.includes(repoPath) ? runRepos.filter((r) => r !== repoPath) : [...runRepos, repoPath]);
@@ -486,9 +487,9 @@ export default function SessionsView() {
               <TerminalPane
                 termKey={`${current.id}::${activeTarget.repoPath}`}
                 content={terminalContent}
-                interactive={!!current.interactive}
+                interactive={terminalInteractive}
                 dark={theme === 'dark'}
-                sessionId={current.interactive ? current.id : undefined}
+                sessionId={terminalInteractive ? current.id : undefined}
                 peerId={current.peerId}
               />
             </>

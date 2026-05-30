@@ -10,6 +10,7 @@ from aiohttp import ClientSession, WSCloseCode
 from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
+from griplab_service.local_client.app import SessionManager, parse_terminal_argv
 from griplab_service.local_client.tree import tree_snapshot_payload
 
 
@@ -615,6 +616,38 @@ def test_command_sessions_reconstruct_after_restart(tmp_path: Path) -> None:
 
     restored_session_id = asyncio.run(run_command_once())
     asyncio.run(verify_restart(restored_session_id))
+
+
+def test_default_terminal_argv_requests_interactive_shell(monkeypatch) -> None:
+    monkeypatch.setenv("SHELL", "/bin/zsh")
+    assert parse_terminal_argv({}) == ["/bin/zsh", "-l", "-i"]
+
+    monkeypatch.setenv("SHELL", "/bin/sh")
+    assert parse_terminal_argv({}) == ["/bin/sh", "-i"]
+
+
+def test_stale_interactive_sessions_restore_as_detached(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+    session_root = config.workspace.root / ".grip-lab" / "sessions" / "term-stale"
+    target_root = session_root / "t000001"
+    target_root.mkdir(parents=True)
+    (target_root / "output.log").write_text("old terminal\n", encoding="utf-8")
+    (session_root / "metadata.json").write_text(json.dumps({
+        "id": "term-stale",
+        "peerId": "me",
+        "argv": ["/bin/sh", "-i"],
+        "startedAt": 1000,
+        "interactive": True,
+        "hidden": False,
+        "targets": [{"targetId": "t000001", "repoPath": "", "exitCode": None, "durationMs": None}],
+    }), encoding="utf-8")
+
+    session = SessionManager(config).sessions[0]
+
+    assert session.id == "term-stale"
+    assert session.interactive is True
+    assert session.targets[0].exit_code == -1
+    assert "no longer attached" in session.targets[0].output
 
 
 def test_sessions_query_filters_by_text_status_peer_and_repo(tmp_path: Path) -> None:

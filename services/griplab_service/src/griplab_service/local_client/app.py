@@ -6,6 +6,7 @@ import asyncio
 import fcntl
 import json
 import os
+import pty
 import re
 import signal
 import subprocess
@@ -1329,17 +1330,25 @@ class SessionManager:
         self.sessions.insert(0, session)
         self._persist_session(session)
         self._append_event(session.id, {"event": "terminalOpened", "sessionId": session.id, "targetId": target.target_id})
-        master_fd, slave_fd = os.openpty()
+        master_fd, slave_fd = pty.openpty()
         set_pty_size(master_fd, rows, cols)
         cwd = (self.config.workspace.root / repo_path).resolve()
+        env = os.environ.copy()
+        env.setdefault("TERM", "xterm-256color")
+
+        def prepare_terminal_child() -> None:
+            os.setsid()
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+
         try:
             process = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=str(cwd),
+                env=env,
                 stdin=slave_fd,
                 stdout=slave_fd,
                 stderr=slave_fd,
-                preexec_fn=os.setsid,
+                preexec_fn=prepare_terminal_child,
             )
         finally:
             os.close(slave_fd)
@@ -1588,7 +1597,9 @@ def parse_terminal_argv(payload: dict[str, Any]) -> list[str]:
     if isinstance(argv, list) and argv and all(isinstance(item, str) and item for item in argv):
         return list(argv)
     shell = os.environ.get("SHELL", "/bin/sh")
-    return [shell, "-l"]
+    if shell.endswith("sh") and shell != "/bin/sh":
+        return [shell, "-l", "-i"]
+    return [shell, "-i"]
 
 
 def session_to_json(session: CommandSessionState) -> dict[str, object]:
@@ -1680,7 +1691,7 @@ def session_from_metadata(value: dict[str, Any], session_dir: Path) -> CommandSe
             system_ms=target_value.get("systemMs"),
             output=output,
         ))
-    return CommandSessionState(
+    session = CommandSessionState(
         id=str(value["id"]),
         peer_id=str(value.get("peerId", "me")),
         argv=[str(item) for item in value.get("argv", [])],
@@ -1689,6 +1700,14 @@ def session_from_metadata(value: dict[str, Any], session_dir: Path) -> CommandSe
         interactive=bool(value.get("interactive", False)),
         hidden=bool(value.get("hidden", False)),
     )
+    if session.interactive:
+        for target in session.targets:
+            if target.exit_code is None:
+                target.exit_code = -1
+                if target.output and not target.output.endswith("\n"):
+                    target.output += "\n"
+                target.output += "[terminal session is no longer attached]\n"
+    return session
 
 
 def atomic_write_json(path: Path, value: dict[str, object]) -> None:
