@@ -4,6 +4,7 @@ import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import type { CommandSession } from '../types';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface SessionsPayload {
   sessions: CommandSession[];
@@ -28,6 +29,7 @@ export function createServiceSessionsTap(client: ServiceClient = defaultServiceC
       return new Map([[SESSIONS, payload.sessions ?? []]]);
     },
     initialState: [[SESSIONS, []]],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 

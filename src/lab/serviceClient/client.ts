@@ -122,6 +122,12 @@ export class ServiceClient {
       while (!signal?.aborted) {
         const event = await this.nextStreamEvent(streamId, signal);
         if (event.done) return;
+        if (event.value.event === 'error') {
+          const message = typeof event.value.payload.message === 'string'
+            ? event.value.payload.message
+            : 'service stream error';
+          throw new Error(message);
+        }
         yield event.value;
       }
     } finally {

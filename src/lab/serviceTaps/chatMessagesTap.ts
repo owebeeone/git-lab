@@ -3,6 +3,7 @@ import { CHAT_MESSAGES } from '../grips';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import type { ChatMessage } from '../types';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface ChatMessagesPayload {
   messages: ChatMessage[];
@@ -22,5 +23,6 @@ export function createServiceChatMessagesTap(client: ServiceClient = defaultServ
       return new Map([[CHAT_MESSAGES, payload.messages ?? []]]);
     },
     initialState: [[CHAT_MESSAGES, []]],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }

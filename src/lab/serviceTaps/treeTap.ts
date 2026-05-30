@@ -4,6 +4,7 @@ import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import type { WorkspaceTreeEntry } from '../types';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface TreePayload {
   version: string;
@@ -37,6 +38,7 @@ export function createServiceTreeTap(client: ServiceClient = defaultServiceClien
       [WORKSPACE_TREE, []],
       [WORKSPACE_TREE_VERSION, ''],
     ],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 

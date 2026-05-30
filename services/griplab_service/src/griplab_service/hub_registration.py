@@ -157,7 +157,7 @@ class HubRegistrationClient:
             "location": str(workspace.get("root", self.config.workspace.root)),
             "os": capabilities.get("os"),
             "shells": [str(shell) for shell in shells] if isinstance(shells, list) else [],
-            "isSelf": False,
+            "isSelf": self.config.self_peer_id == "me",
             "workspaceId": self.config.workspace.workspace_id,
         }
 

@@ -10,6 +10,7 @@ import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import { parseDiagnostics } from '../sessionOutputTap';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface SessionOutputPayload {
   output: string;
@@ -51,5 +52,6 @@ export function createServiceSessionOutputTap(client: ServiceClient = defaultSer
       [SESSION_OUTPUT, ''],
       [SESSION_DIAGNOSTICS, { kind: 'none', failed: 0, passed: 0, failures: [] }],
     ],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }

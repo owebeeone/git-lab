@@ -4,6 +4,7 @@ import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { RepoStatus } from '../types';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface WorkspaceStatusPayload {
   repos: RepoStatus[];
@@ -28,6 +29,7 @@ export function createServiceWorkspaceStatusTap(client: ServiceClient = defaultS
       return new Map([[WORKSPACE_REPOS, payload.repos]]);
     },
     initialState: [[WORKSPACE_REPOS, []]],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 

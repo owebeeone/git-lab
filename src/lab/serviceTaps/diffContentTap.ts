@@ -15,6 +15,7 @@ import { defaultServiceClient, type ServiceClient } from '../serviceClient/clien
 import { parseDiffPayload, type DiffEndpoint as ServiceDiffEndpoint } from '../serviceClient/diff/index.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import type { DiffEndpoint, DiffStreamStatus, LineWindow } from '../types';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 type DiffOuts = {
   hunks: typeof DIFF_HUNKS;
@@ -61,6 +62,7 @@ export function createServiceDiffContentTap(client: ServiceClient = defaultServi
       [DIFF_STREAM_STATUS, { status: 'idle', error: null }],
       [DIFF_VERSION, ''],
     ],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 

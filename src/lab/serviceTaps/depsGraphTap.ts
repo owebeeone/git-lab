@@ -3,6 +3,7 @@ import { SELECTED_PEER_ID, WORKSPACE_DEP_EDGES } from '../grips';
 import { LAB_HUB_ROUTE } from '../dataMode';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { DependencyEdge } from '../types';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 interface DepsGraphPayload {
   repos: string[];
@@ -28,6 +29,7 @@ export function createServiceDepsGraphTap(client: ServiceClient = defaultService
     },
     mapEvent: (_params, event) => new Map([[WORKSPACE_DEP_EDGES, event.edges]]),
     initialState: [[WORKSPACE_DEP_EDGES, []]],
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 

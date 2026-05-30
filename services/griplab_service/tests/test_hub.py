@@ -45,8 +45,7 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
                     })
                     initial = await watcher.receive_json(timeout=2)
                     peers = initial["payload"]["payload"]["peers"]
-                    assert [peer["id"] for peer in peers] == ["hub"]
-                    assert peers[0]["status"] == "online"
+                    assert [peer["id"] for peer in peers] == []
 
                     client = await session.ws_connect(server.ws_url)
                     await client.send_json({
@@ -118,8 +117,8 @@ def test_hub_presence_loads_configured_collaborators(tmp_path: Path) -> None:
                     })
                     snapshot = await ws.receive_json(timeout=2)
                     peers = snapshot["payload"]["payload"]["peers"]
-                    assert [peer["id"] for peer in peers] == ["hub", "weftpi"]
-                    configured = peers[1]
+                    assert [peer["id"] for peer in peers] == ["weftpi"]
+                    configured = peers[0]
                     assert configured["status"] in {"starting", "error"}
                     assert configured["online"] is False
                     assert configured["sshAddress"] == "gianni@example.invalid"
@@ -353,6 +352,57 @@ def test_hub_routes_request_through_registered_tunnel(tmp_path: Path) -> None:
                     response = await caller.receive_json(timeout=2)
                     assert response["kind"] == "response"
                     assert response["payload"] == {"repos": [""], "edges": [], "errors": {}}
+                    await target.close()
+        finally:
+            local.stop()
+            hub.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routes_subscription_through_registered_tunnel(tmp_path: Path) -> None:
+    async def run() -> None:
+        hub_root = tmp_path / "hub"
+        hub_root.mkdir()
+        local_root = tmp_path / "local-peer"
+        local_root.mkdir()
+        hub_config = load_config(write_hub_config(hub_root))
+        local_config_path = write_config(local_root)
+        local_value = json.loads(local_config_path.read_text(encoding="utf-8"))
+        local_value["selfPeerId"] = "target"
+        local_config_path.write_text(json.dumps(local_value), encoding="utf-8")
+        local_config = load_config(local_config_path)
+        hub = HubServer(hub_config)
+        local = LocalClientServer(local_config)
+        hub.start()
+        local.start()
+        try:
+            assert hub._runner is not None
+            registry = hub._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
+            registry.register_tunnel("target", local_peer_port=int(local.url.rsplit(":", 1)[1]))
+            async with ClientSession() as session:
+                async with session.ws_connect(hub.ws_url) as caller:
+                    target = await session.ws_connect(hub.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.subscribe",
+                        "streamId": "caller-tree",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "tree.subscribe",
+                            "payload": {},
+                        },
+                    })
+                    event = await caller.receive_json(timeout=2)
+                    assert event["kind"] == "stream-event"
+                    assert event["method"] == "hub.route.subscribe"
+                    assert event["streamId"] == "caller-tree"
+                    assert event["payload"]["streamId"] == "caller-tree"
+                    assert event["payload"]["event"] == "snapshot"
+                    assert event["payload"]["payload"]["entries"]
                     await target.close()
         finally:
             local.stop()

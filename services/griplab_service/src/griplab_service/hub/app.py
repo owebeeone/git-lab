@@ -401,6 +401,16 @@ class RoutedStream:
     target_stream_id: str
 
 
+@dataclass
+class TunnelRoutedStream:
+    caller: "HubConnection"
+    caller_message_id: str
+    caller_stream_id: str
+    caller_method: str
+    target_stream_id: str
+    task: asyncio.Task[None] | None = None
+
+
 @dataclass(frozen=True)
 class PeerTunnel:
     peer_id: str
@@ -561,6 +571,7 @@ class PeerRegistry:
         self.routed_requests: dict[str, RoutedRequest] = {}
         self.routed_streams_by_target: dict[str, RoutedStream] = {}
         self.routed_streams_by_caller: dict[str, RoutedStream] = {}
+        self.tunnel_streams_by_caller: dict[str, TunnelRoutedStream] = {}
         self.diff_sources_by_target_stream: dict[str, tuple[HubDiffStream, str]] = {}
         self.tunnels: dict[str, PeerTunnel] = {}
         self.bootstrap_worker: HubBootstrapWorker | None = None
@@ -604,6 +615,16 @@ class PeerRegistry:
             self.reconcile_collaborator(collaborator.peer_id)
 
     async def close_bootstrap(self) -> None:
+        for routed in list(self.tunnel_streams_by_caller.values()):
+            if routed.task is not None:
+                routed.task.cancel()
+        for routed in list(self.tunnel_streams_by_caller.values()):
+            if routed.task is not None:
+                try:
+                    await routed.task
+                except asyncio.CancelledError:
+                    pass
+        self.tunnel_streams_by_caller.clear()
         for task in list(self.bootstrap_tasks.values()):
             task.cancel()
         for task in list(self.bootstrap_tasks.values()):
@@ -716,7 +737,7 @@ class PeerRegistry:
         self.publish()
 
     def peers_json(self) -> list[dict[str, object]]:
-        merged = {self.config.self_peer_id: dict(self.self_peer)}
+        merged = {} if self.config.mode == "hub" else {self.config.self_peer_id: dict(self.self_peer)}
         for collaborator in self.collaborators.values():
             merged[collaborator.peer_id] = configured_presence(collaborator)
         for peer_id, state in self.bootstrap_states.items():
@@ -961,6 +982,43 @@ class PeerRegistry:
                 error=ErrorInfo("missing-stream-id", "hub.route.subscribe requires streamId"),
             ))
             return
+        target_peer_id = str(envelope.payload.get("targetPeerId", ""))
+        method = str(envelope.payload.get("method", ""))
+        payload_value = envelope.payload.get("payload", {})
+        payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+        tunnel = self.tunnels.get(target_peer_id)
+        if tunnel is not None:
+            if not self._peer_is_online(target_peer_id):
+                await caller.send(ProtocolEnvelope.stream_event(
+                    message_id=envelope.message_id,
+                    method=envelope.method or "hub.route.subscribe",
+                    stream_id=envelope.stream_id,
+                    event=StreamEvent(
+                        stream_id=envelope.stream_id,
+                        seq=0,
+                        event="error",
+                        payload={
+                            "code": "peer-starting",
+                            "message": f"target peer is not registered online: {target_peer_id}",
+                        },
+                    ),
+                ))
+                return
+            if not method:
+                await caller.send(ProtocolEnvelope.stream_event(
+                    message_id=envelope.message_id,
+                    method=envelope.method or "hub.route.subscribe",
+                    stream_id=envelope.stream_id,
+                    event=StreamEvent(
+                        stream_id=envelope.stream_id,
+                        seq=0,
+                        event="error",
+                        payload={"code": "missing-method", "message": "routed subscription requires method"},
+                    ),
+                ))
+                return
+            await self._route_subscribe_via_tunnel(caller, envelope, tunnel, method, payload)
+            return
         target = await self._resolve_target(caller, envelope)
         if target is None:
             return
@@ -984,6 +1042,93 @@ class PeerRegistry:
             method=method,
             stream_id=target_stream_id,
             payload=payload,
+        ))
+
+    async def _route_subscribe_via_tunnel(
+        self,
+        caller: HubConnection,
+        envelope: ProtocolEnvelope,
+        tunnel: PeerTunnel,
+        method: str,
+        payload: dict[str, Any],
+    ) -> None:
+        assert envelope.stream_id is not None
+        target_message_id = self._next_relay_message_id()
+        target_stream_id = self._next_relay_stream_id()
+        stream = TunnelRoutedStream(
+            caller=caller,
+            caller_message_id=envelope.message_id,
+            caller_stream_id=envelope.stream_id,
+            caller_method=envelope.method or "hub.route.subscribe",
+            target_stream_id=target_stream_id,
+        )
+        previous = self.tunnel_streams_by_caller.pop(envelope.stream_id, None)
+        if previous is not None and previous.task is not None:
+            previous.task.cancel()
+        self.tunnel_streams_by_caller[envelope.stream_id] = stream
+        stream.task = asyncio.create_task(self._run_tunnel_stream(tunnel, stream, target_message_id, method, payload))
+
+    async def _run_tunnel_stream(
+        self,
+        tunnel: PeerTunnel,
+        stream: TunnelRoutedStream,
+        target_message_id: str,
+        method: str,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(tunnel.ws_url) as ws:
+                    await ws.send_json(envelope_to_json(ProtocolEnvelope(
+                        message_id=target_message_id,
+                        kind="request",
+                        method=method,
+                        stream_id=stream.target_stream_id,
+                        payload=payload,
+                    )))
+                    async for msg in ws:
+                        if msg.type != WSMsgType.TEXT:
+                            continue
+                        envelope = envelope_from_json(json.loads(msg.data))
+                        if envelope.kind == "stream-event" and envelope.stream_id == stream.target_stream_id:
+                            event = StreamEvent(
+                                stream_id=stream.caller_stream_id,
+                                seq=int(envelope.payload.get("seq", 0)),
+                                event=str(envelope.payload.get("event", "message")),
+                                payload=dict(envelope.payload.get("payload", {})),
+                            )
+                            await stream.caller.send(ProtocolEnvelope.stream_event(
+                                message_id=stream.caller_message_id,
+                                method=stream.caller_method,
+                                stream_id=stream.caller_stream_id,
+                                event=event,
+                            ))
+                        elif envelope.kind == "error":
+                            await self._send_tunnel_stream_error(
+                                stream,
+                                envelope.error.code if envelope.error is not None else "target-error",
+                                envelope.error.message if envelope.error is not None else "target returned an error",
+                            )
+                            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            await self._send_tunnel_stream_error(stream, "peer-tunnel-error", str(exc))
+        finally:
+            if self.tunnel_streams_by_caller.get(stream.caller_stream_id) is stream:
+                self.tunnel_streams_by_caller.pop(stream.caller_stream_id, None)
+
+    async def _send_tunnel_stream_error(self, stream: TunnelRoutedStream, code: str, message: str) -> None:
+        await stream.caller.send(ProtocolEnvelope.stream_event(
+            message_id=stream.caller_message_id,
+            method=stream.caller_method,
+            stream_id=stream.caller_stream_id,
+            event=StreamEvent(
+                stream_id=stream.caller_stream_id,
+                seq=0,
+                event="error",
+                payload={"code": code, "message": message},
+            ),
         ))
 
     async def open_diff_stream(
@@ -1329,6 +1474,12 @@ class PeerRegistry:
                 continue
             self.routed_streams_by_target.pop(target_stream_id, None)
             self.routed_streams_by_caller.pop(routed.caller_stream_id, None)
+        for caller_stream_id, routed in list(self.tunnel_streams_by_caller.items()):
+            if routed.caller is not caller:
+                continue
+            self.tunnel_streams_by_caller.pop(caller_stream_id, None)
+            if routed.task is not None:
+                routed.task.cancel()
         for target_message_id, routed in list(self.routed_requests.items()):
             if routed.caller is caller:
                 self.routed_requests.pop(target_message_id, None)

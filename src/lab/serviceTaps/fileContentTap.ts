@@ -15,6 +15,7 @@ import { defaultServiceClient, type ServiceClient } from '../serviceClient/clien
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
 import type { FileRef, FileStreamStatus, LineWindow } from '../types';
 import type { ResetEvent } from '../serviceClient/filedelta/index.ts';
+import { SERVICE_STREAM_RETRY } from './retry';
 
 type FileOuts = {
   content: typeof FILE_CONTENT;
@@ -69,6 +70,7 @@ export function createServiceFileContentTap(client: ServiceClient = defaultServi
     onError: (_error, requestKey) => {
       reassemblers.delete(requestKey);
     },
+    retry: SERVICE_STREAM_RETRY,
   }) as unknown as Tap;
 }
 
