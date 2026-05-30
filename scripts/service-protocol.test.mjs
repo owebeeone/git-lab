@@ -282,12 +282,18 @@ assert.equal((await disconnectedStatus).value.status, 'disconnected');
 controller.abort();
 
 const closedTransport = new FakeServiceTransport();
-const closedClient = new ServiceClient({ url: 'ws://test.local/ws', transportFactory: () => closedTransport });
+const closedClient = new ServiceClient({
+  url: 'ws://test.local/ws',
+  transportFactory: () => closedTransport,
+  reconnectDelayMs: 1,
+  maxReconnectDelayMs: 1,
+});
 await closedClient.connect();
 const reconnecting = closedClient.watchStatus()[Symbol.asyncIterator]();
 assert.equal((await reconnecting.next()).value.status, 'connected');
 const reconnectingStatus = reconnecting.next();
 closedTransport.close();
 assert.equal((await reconnectingStatus).value.status, 'reconnecting');
+assert.equal((await reconnecting.next()).value.status, 'connected');
 
 console.log('OK: service protocol validators');

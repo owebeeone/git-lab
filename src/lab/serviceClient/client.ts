@@ -11,6 +11,8 @@ export interface ServiceClientOptions {
   url: string;
   httpUrl?: string;
   transportFactory?: (url: string) => ServiceTransport;
+  reconnectDelayMs?: number;
+  maxReconnectDelayMs?: number;
 }
 
 type StatusListener = (state: ServiceConnectionState) => void;
@@ -31,6 +33,7 @@ export class ServiceClient {
   }>();
   private readonly statusListeners = new Set<StatusListener>();
   private currentStatus: ServiceConnectionState;
+  private reconnecting = false;
 
   constructor(options: ServiceClientOptions) {
     this.options = options;
@@ -73,6 +76,7 @@ export class ServiceClient {
 
   close(): void {
     this.transport.close();
+    this.reconnecting = false;
     this.setStatus({ status: 'disconnected', url: this.options.url, error: null });
   }
 
@@ -179,7 +183,34 @@ export class ServiceClient {
       this.reader = null;
       if (this.currentStatus.status === 'connected') {
         this.setStatus({ status: 'reconnecting', url: this.options.url, error: 'transport closed' });
+        this.endAllStreams();
+        void this.reconnectLoop(signal);
       }
+    }
+  }
+
+  private async reconnectLoop(signal?: AbortSignal): Promise<void> {
+    if (this.reconnecting) return;
+    this.reconnecting = true;
+    let delay = this.options.reconnectDelayMs ?? 250;
+    const maxDelay = this.options.maxReconnectDelayMs ?? 4000;
+    try {
+      while (!signal?.aborted && this.currentStatus.status === 'reconnecting') {
+        await sleep(delay, signal);
+        if (signal?.aborted || this.currentStatus.status !== 'reconnecting') return;
+        try {
+          await this.transport.connect(signal);
+          this.setStatus({ status: 'connected', url: this.options.url, error: null });
+          this.reader ??= this.readLoop(signal);
+          return;
+        } catch (error) {
+          const message = errorMessage(error);
+          this.setStatus({ status: 'reconnecting', url: this.options.url, error: message });
+          delay = Math.min(maxDelay, Math.round(delay * 1.8));
+        }
+      }
+    } finally {
+      this.reconnecting = false;
     }
   }
 
@@ -226,6 +257,25 @@ export class ServiceClient {
     for (const pending of this.pending.values()) pending.reject(new Error(message));
     this.pending.clear();
   }
+
+  private endAllStreams(): void {
+    for (const stream of this.streams.values()) {
+      for (const waiter of stream.waiters.splice(0)) {
+        waiter({ done: true, value: undefined });
+      }
+    }
+  }
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = globalThis.setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      globalThis.clearTimeout(timer);
+      resolve();
+    }, { once: true });
+  });
 }
 
 function errorMessage(error: unknown): string {

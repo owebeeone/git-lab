@@ -26,6 +26,7 @@ export class FakeServiceTransport implements ServiceTransport {
 
   close(): void {
     this.closed = true;
+    this.connected = false;
     for (const waiter of this.waiters.splice(0)) {
       waiter({ done: true, value: undefined });
     }

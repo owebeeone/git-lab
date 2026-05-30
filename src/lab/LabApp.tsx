@@ -1,4 +1,5 @@
 import { useGrip } from '@owebeeone/grip-react';
+import type { MouseEvent } from 'react';
 import { CURRENT_VIEW, CURRENT_VIEW_TAP, THEME } from './grips';
 import { SERVICE_CONNECTION } from './grips.service';
 import { LAB_SERVICE_MODE } from './dataMode';
@@ -23,6 +24,10 @@ const TABS: { id: ViewId; label: string; icon: string }[] = [
   { id: 'onboarding', label: 'Collaborators', icon: 'collaborators' },
   { id: 'settings', label: 'Settings', icon: 'settings' },
 ];
+
+function closeServiceMenu(event: MouseEvent<HTMLButtonElement>) {
+  event.currentTarget.closest('details')?.removeAttribute('open');
+}
 
 export default function LabApp() {
   const view = useGrip(CURRENT_VIEW);
@@ -54,8 +59,8 @@ export default function LabApp() {
               <span>{service?.status ?? 'disconnected'}</span>
             </summary>
             <div className="menu service-menu-panel">
-              <button onClick={() => { void restartHub(); }}>Restart hub</button>
-              <button onClick={() => { void restartLocalClient(); }}>Restart client</button>
+              <button onClick={(event) => { closeServiceMenu(event); void restartHub(); }}>Restart hub</button>
+              <button onClick={(event) => { closeServiceMenu(event); void restartLocalClient(); }}>Restart client</button>
             </div>
           </details>
         )}
