@@ -8,12 +8,14 @@ copied to Mac, Windows/WSL, and Raspberry Pi test machines without packaging.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import platform
 import shutil
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
@@ -40,6 +42,8 @@ DEFAULT_CONFIG = {
     },
     "profiles": [],
 }
+
+BASE_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=".",
         help="Project root used to find vm_manage/glvm.toml",
     )
+    parser.add_argument(
+        "--state-file",
+        help="Local state file path; defaults to user config state",
+    )
 
     subparsers = parser.add_subparsers(dest="command")
 
@@ -176,9 +184,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     image_parser = subparsers.add_parser("image", help="Manage reusable provider bases")
     image_subparsers = image_parser.add_subparsers(dest="image_command")
-    image_subparsers.add_parser("build", help="Build or refresh a reusable base")
+    image_build = image_subparsers.add_parser("build", help="Build or refresh a reusable base")
+    image_build.add_argument("--profile", required=True, help="Profile name to build")
+    image_build.add_argument("--name", required=True, help="Reusable base name")
+    image_build.add_argument("--provider", help="Provider name override")
     image_subparsers.add_parser("list", help="List reusable bases")
-    image_subparsers.add_parser("delete", help="Delete a reusable base")
+    image_delete = image_subparsers.add_parser("delete", help="Delete a reusable base")
+    image_delete.add_argument("name", help="Reusable base name")
 
     for command, help_text in (
         ("create", "Create a machine from a profile"),
@@ -423,6 +435,71 @@ def resolve_network_alias(config: ProjectConfig, network: str) -> object:
     return config.network_aliases.get(network, network)
 
 
+def default_state_path() -> Path:
+    if platform.system().lower() == "windows":
+        root = os.environ.get("APPDATA")
+        if root:
+            return Path(root) / "griplab-vm" / "state.json"
+    config_home = os.environ.get("XDG_CONFIG_HOME")
+    if config_home:
+        return Path(config_home) / "griplab-vm" / "state.json"
+    return Path.home() / ".config" / "griplab-vm" / "state.json"
+
+
+def state_store_from_args(args: argparse.Namespace) -> StateStore:
+    if args.state_file:
+        return StateStore(Path(args.state_file))
+    return StateStore(default_state_path())
+
+
+def find_profile(config: ProjectConfig, name: str) -> dict[str, object]:
+    for profile in config.profiles:
+        if profile.get("name") == name:
+            return profile
+    raise ValueError(f"profile not found: {name}")
+
+
+def resolved_profile_inputs(
+    config: ProjectConfig,
+    profile: dict[str, object],
+    provider: str,
+) -> dict[str, object]:
+    image_alias = str(profile.get("image", "ubuntu-lts"))
+    network_alias = str(profile.get("network", "none"))
+    return {
+        "base_schema_version": BASE_SCHEMA_VERSION,
+        "provider": provider,
+        "profile": profile.get("name"),
+        "image_alias": image_alias,
+        "resolved_image": resolve_image_alias(config, image_alias),
+        "network_alias": network_alias,
+        "resolved_network": resolve_network_alias(config, network_alias),
+        "cpus": profile.get("cpus"),
+        "memory": profile.get("memory"),
+        "disk": profile.get("disk"),
+        "mounts": profile.get("mounts", []),
+        "tools": profile.get("tools", []),
+        "packages": profile.get("packages", []),
+    }
+
+
+def base_fingerprint(inputs: dict[str, object]) -> str:
+    payload = json.dumps(inputs, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def choose_provider(config: ProjectConfig, override: str | None) -> str:
+    if override:
+        return override
+    if config.default_provider != "auto":
+        return config.default_provider
+    return "orbstack"
+
+
 def run_providers() -> int:
     for status in provider_statuses():
         state = "available" if status.available else "unavailable"
@@ -454,6 +531,82 @@ def run_doctor() -> int:
     return run_providers()
 
 
+def run_image(args: argparse.Namespace) -> int:
+    if args.image_command == "build":
+        return run_image_build(args)
+    if args.image_command == "list":
+        return run_image_list(args)
+    if args.image_command == "delete":
+        return run_image_delete(args)
+    print("image command required")
+    return 2
+
+
+def run_image_build(args: argparse.Namespace) -> int:
+    config = read_project_config(Path(args.project_root))
+    profile = find_profile(config, args.profile)
+    provider = choose_provider(config, args.provider)
+    inputs = resolved_profile_inputs(config, profile, provider)
+    fingerprint = base_fingerprint(inputs)
+
+    store = state_store_from_args(args)
+    state = store.read()
+    bases = state.setdefault("bases", {})
+    if not isinstance(bases, dict):
+        raise StateError("state field 'bases' must be an object")
+
+    previous = bases.get(args.name)
+    stale = isinstance(previous, dict) and previous.get("fingerprint") != fingerprint
+    bases[args.name] = {
+        "provider": provider,
+        "provider_id": f"glvm-base-{args.name}",
+        "profile": args.profile,
+        "image_alias": inputs["image_alias"],
+        "resolved_image": inputs["resolved_image"],
+        "network_alias": inputs["network_alias"],
+        "resolved_network": inputs["resolved_network"],
+        "tools": inputs["tools"],
+        "packages": inputs["packages"],
+        "fingerprint": fingerprint,
+        "stale": False,
+        "created_at": utc_now(),
+    }
+    store.write(state)
+
+    status = "rebuilt" if stale else "built"
+    print(f"{status} base {args.name} ({provider})")
+    return 0
+
+
+def run_image_list(args: argparse.Namespace) -> int:
+    state = state_store_from_args(args).read()
+    bases = state.get("bases", {})
+    if not isinstance(bases, dict):
+        raise StateError("state field 'bases' must be an object")
+    for name, base in sorted(bases.items()):
+        if isinstance(base, dict):
+            provider = base.get("provider", "unknown")
+            profile = base.get("profile", "unknown")
+            stale = " stale" if base.get("stale") else ""
+            print(f"{name}: {provider} profile={profile}{stale}")
+    return 0
+
+
+def run_image_delete(args: argparse.Namespace) -> int:
+    store = state_store_from_args(args)
+    state = store.read()
+    bases = state.get("bases", {})
+    if not isinstance(bases, dict):
+        raise StateError("state field 'bases' must be an object")
+    if args.name in bases:
+        del bases[args.name]
+        store.write(state)
+        print(f"deleted base {args.name}")
+    else:
+        print(f"base not found: {args.name}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     try:
@@ -469,6 +622,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_profiles(Path(args.project_root))
     if args.command == "aliases":
         return run_aliases(Path(args.project_root))
+    if args.command == "image":
+        return run_image(args)
     if args.command is None:
         parser.print_help()
         return 0
