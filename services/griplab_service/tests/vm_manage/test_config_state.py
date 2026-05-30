@@ -437,3 +437,43 @@ tools = ["python"]
     assert "destroyed machine dev-one" in captured.out
     assert state["bases"]["dev-base"]["provider_id"] == "glvm-base-dev-base"
     assert state["machines"] == {}
+
+
+def test_install_tool_qemu_linux_apt_dry_run(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "griplab_service.vm_manger.griplab_vm.shutil.which",
+        lambda command: "/usr/bin/apt-get" if command == "apt-get" else None,
+    )
+
+    exit_code = main(["install-tool", "qemu"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "install plan: qemu on linux via apt" in captured.out
+    assert "$ sudo apt-get update" in captured.out
+    assert "qemu-system-aarch64" in captured.out
+    assert "dry-run only; pass --execute to run" in captured.out
+
+
+def test_install_tool_execute_runs_matrix_commands(monkeypatch) -> None:
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "griplab_service.vm_manger.griplab_vm.shutil.which",
+        lambda command: "brew" if command == "brew" else None,
+    )
+    runner = FakeRunner()
+
+    exit_code = main(["install-tool", "lima", "--execute"], command_runner=runner)
+
+    assert exit_code == 0
+    assert runner.commands == [["brew", "install", "lima"]]
+
+
+def test_install_tool_missing_plan_returns_error(monkeypatch) -> None:
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.platform.system", lambda: "Linux")
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.shutil.which", lambda command: None)
+
+    with pytest.raises(StateError, match="no install plan"):
+        main(["install-tool", "qemu"])

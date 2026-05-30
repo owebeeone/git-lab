@@ -112,6 +112,15 @@ class CommandRunner:
         return CommandResult(result.returncode, result.stdout, result.stderr)
 
 
+@dataclass(frozen=True)
+class InstallPlan:
+    system: str
+    manager: str
+    tool: str
+    commands: tuple[tuple[str, ...], ...]
+    needs_confirmation: bool
+
+
 class StateError(RuntimeError):
     pass
 
@@ -196,6 +205,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("providers", help="List known provider adapters")
     subparsers.add_parser("profiles", help="List project VM profiles")
     subparsers.add_parser("aliases", help="List resolved OS and network aliases")
+    install_parser = subparsers.add_parser("install-tool", help="Show or run provider tool install steps")
+    install_parser.add_argument("tool", help="Tool to install, such as qemu")
+    install_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run the install commands instead of printing the plan",
+    )
 
     image_parser = subparsers.add_parser("image", help="Manage reusable provider bases")
     image_subparsers = image_parser.add_subparsers(dest="image_command")
@@ -487,6 +503,83 @@ def command_runner_from_args(args: argparse.Namespace) -> CommandRunner:
     return CommandRunner()
 
 
+def package_manager_for_system(system: str) -> str:
+    if system == "linux":
+        if shutil.which("apt-get"):
+            return "apt"
+        return "unknown"
+    if system == "darwin":
+        if shutil.which("brew"):
+            return "brew"
+        return "unknown"
+    if system == "windows":
+        if shutil.which("winget"):
+            return "winget"
+        return "unknown"
+    return "unknown"
+
+
+def install_matrix() -> dict[tuple[str, str, str], InstallPlan]:
+    return {
+        ("linux", "apt", "qemu"): InstallPlan(
+            system="linux",
+            manager="apt",
+            tool="qemu",
+            commands=(
+                ("sudo", "apt-get", "update"),
+                (
+                    "sudo",
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "qemu-system-aarch64",
+                    "qemu-system-x86",
+                    "qemu-utils",
+                    "cloud-image-utils",
+                ),
+            ),
+            needs_confirmation=True,
+        ),
+        ("darwin", "brew", "qemu"): InstallPlan(
+            system="darwin",
+            manager="brew",
+            tool="qemu",
+            commands=(("brew", "install", "qemu"),),
+            needs_confirmation=True,
+        ),
+        ("darwin", "brew", "lima"): InstallPlan(
+            system="darwin",
+            manager="brew",
+            tool="lima",
+            commands=(("brew", "install", "lima"),),
+            needs_confirmation=True,
+        ),
+        ("darwin", "brew", "orbstack"): InstallPlan(
+            system="darwin",
+            manager="brew",
+            tool="orbstack",
+            commands=(("brew", "install", "--cask", "orbstack"),),
+            needs_confirmation=True,
+        ),
+        ("windows", "winget", "wsl2"): InstallPlan(
+            system="windows",
+            manager="winget",
+            tool="wsl2",
+            commands=(("wsl", "--install"),),
+            needs_confirmation=True,
+        ),
+    }
+
+
+def select_install_plan(tool: str) -> InstallPlan:
+    system = platform.system().lower()
+    manager = package_manager_for_system(system)
+    plan = install_matrix().get((system, manager, tool))
+    if plan is None:
+        raise StateError(f"no install plan for tool={tool} system={system} manager={manager}")
+    return plan
+
+
 def find_profile(config: ProjectConfig, name: str) -> dict[str, object]:
     for profile in config.profiles:
         if profile.get("name") == name:
@@ -564,6 +657,29 @@ def run_doctor() -> int:
     print("griplab-vm doctor")
     print("provider detection is not implemented in this checkpoint")
     return run_providers()
+
+
+def run_install_tool(args: argparse.Namespace) -> int:
+    plan = select_install_plan(args.tool)
+    print(f"install plan: {plan.tool} on {plan.system} via {plan.manager}")
+    for command in plan.commands:
+        print("$ " + " ".join(command))
+
+    if not args.execute:
+        print("dry-run only; pass --execute to run")
+        return 0
+
+    runner = command_runner_from_args(args)
+    for command in plan.commands:
+        result = runner.run(list(command))
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
+        if result.returncode != 0:
+            print(f"install command failed: {' '.join(command)}")
+            return int(result.returncode)
+    return 0
 
 
 def run_image(args: argparse.Namespace) -> int:
@@ -909,6 +1025,8 @@ def main(argv: Sequence[str] | None = None, command_runner: CommandRunner | None
         return run_profiles(Path(args.project_root))
     if args.command == "aliases":
         return run_aliases(Path(args.project_root))
+    if args.command == "install-tool":
+        return run_install_tool(args)
     if args.command == "image":
         return run_image(args)
     if args.command == "create":

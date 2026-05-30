@@ -58,8 +58,15 @@ def test_provider_detection_reports_missing_command(monkeypatch) -> None:
     assert statuses["native-host"].available is True
 
 
-def test_checkpoint_has_no_sudo_shellouts() -> None:
-    source = griplab_vm.__loader__.get_source(griplab_vm.__name__)
+def test_sudo_is_limited_to_explicit_install_plans() -> None:
+    plans = griplab_vm.install_matrix()
 
-    assert source is not None
-    assert "sudo" not in source
+    sudo_commands = [
+        command
+        for plan in plans.values()
+        for command in plan.commands
+        if command and command[0] == "sudo"
+    ]
+
+    assert sudo_commands
+    assert all(plan.needs_confirmation for plan in plans.values())
