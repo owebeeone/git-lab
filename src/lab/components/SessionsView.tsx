@@ -203,6 +203,14 @@ export default function SessionsView() {
     if (errors.length) return;
     if (LAB_SERVICE_MODE) {
       void runServiceCommand(cmd.split(/\s+/), repos, targetPeer).then((sessionId) => {
+        const session: CommandSession = {
+          id: sessionId,
+          peerId: targetPeer,
+          argv: cmd.split(/\s+/),
+          startedAt: Date.now(),
+          targets: repos.map((repoPath) => ({ repoPath, exitCode: null, output: '' })),
+        };
+        sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
         selectedTap?.set(sessionId);
         selectedTargetTap?.set(repos[0] ?? '');
         draftTap?.set('');
@@ -228,6 +236,15 @@ export default function SessionsView() {
   const openTerminal = () => {
     if (LAB_SERVICE_MODE) {
       void openServiceTerminal('', targetPeer).then((sessionId) => {
+        const session: CommandSession = {
+          id: sessionId,
+          peerId: targetPeer,
+          argv: ['terminal'],
+          startedAt: Date.now(),
+          interactive: true,
+          targets: [{ repoPath: '', exitCode: null, output: '' }],
+        };
+        sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
         selectedTap?.set(sessionId);
         selectedTargetTap?.set('');
       });
@@ -252,6 +269,14 @@ export default function SessionsView() {
     const cmd = s.argv.join(' ');
     if (LAB_SERVICE_MODE) {
       void runServiceCommand(s.argv, s.targets.map((t) => t.repoPath), s.peerId).then((sessionId) => {
+        const session: CommandSession = {
+          id: sessionId,
+          peerId: s.peerId,
+          argv: s.argv,
+          startedAt: Date.now(),
+          targets: s.targets.map((target) => ({ repoPath: target.repoPath, exitCode: null, output: '' })),
+        };
+        sessionsTap?.set([session, ...sessions.filter((item) => item.id !== sessionId)]);
         selectedTap?.set(sessionId);
         selectedTargetTap?.set(s.targets[0]?.repoPath ?? '');
       });
