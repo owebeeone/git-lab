@@ -67,6 +67,7 @@ transport.push({
   payload: { ok: true },
 });
 assert.deepEqual((await requestPromise).payload, { ok: true });
+assert.equal(client.httpUrl, 'http://test.local/');
 
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();

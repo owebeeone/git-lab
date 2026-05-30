@@ -9,6 +9,7 @@ import { WebSocketServiceTransport, type ServiceTransport } from './transport.ts
 
 export interface ServiceClientOptions {
   url: string;
+  httpUrl?: string;
   transportFactory?: (url: string) => ServiceTransport;
 }
 
@@ -39,6 +40,10 @@ export class ServiceClient {
 
   get status(): ServiceConnectionState {
     return this.currentStatus;
+  }
+
+  get httpUrl(): string {
+    return this.options.httpUrl ?? websocketUrlToHttpUrl(this.options.url);
   }
 
   nextMessageId(): string {
@@ -84,6 +89,14 @@ export class ServiceClient {
     });
     this.transport.send(envelope);
     return result;
+  }
+
+  async getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const response = await fetch(new URL(path, this.httpUrl), { signal });
+    if (!response.ok) {
+      throw new Error(`service http ${response.status}: ${response.statusText}`);
+    }
+    return await response.json() as T;
   }
 
   async *subscribe(method: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): AsyncIterable<ServiceStreamEvent> {
@@ -199,6 +212,15 @@ export class ServiceClient {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function websocketUrlToHttpUrl(value: string): string {
+  const url = new URL(value);
+  url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+  url.pathname = '/';
+  url.search = '';
+  url.hash = '';
+  return url.toString();
 }
 
 const viteEnv = (import.meta as ImportMeta & { env?: { VITE_GL_SERVICE_URL?: string } }).env;
