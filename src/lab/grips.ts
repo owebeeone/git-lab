@@ -145,4 +145,5 @@ export const RUN_DIALOG_OPEN_TAP = defineGrip<AtomTapHandle<boolean>>('Lab.RunDi
 
 // Outputs of the SessionOutputTap (home params: SESSIONS + SELECTED_SESSION).
 export const SESSION_OUTPUT = defineGrip<string>('Lab.SessionOutput', '');
+export const SESSION_OUTPUT_SOURCE = defineGrip<{ peerId: string; sessionId: string; repoPath: string } | null>('Lab.SessionOutputSource', null);
 export const SESSION_DIAGNOSTICS = defineGrip<SessionDiagnostics>('Lab.SessionDiagnostics', { kind: 'none', failed: 0, passed: 0, failures: [] });

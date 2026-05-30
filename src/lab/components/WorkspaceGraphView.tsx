@@ -24,7 +24,7 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
   const depEdges = useGrip(WORKSPACE_DEP_EDGES) ?? [];
 
   // Feed the latest repo set to the engine (idempotent; not React state).
-  graphEngine.setInput(repos, depEdges);
+  graphEngine.setInput(repos, depEdges, peer?.id ?? '');
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
   // Dependency edges (source depends on target), arrow points to the dependency.

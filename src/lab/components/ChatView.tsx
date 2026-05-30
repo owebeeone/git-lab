@@ -9,6 +9,7 @@ import {
   CHAT_COMPOSER_H, CHAT_COMPOSER_H_TAP,
   CHAT_COMPOSER_DRAG, CHAT_COMPOSER_DRAG_TAP,
   CURRENT_VIEW_TAP, SELECTED_FILE_TAP, SELECTED_PEER_ID_TAP,
+  SELECTED_SESSION_TAP, SELECTED_TARGET_TAP,
   DIFF_LEFT_TAP, DIFF_RIGHT_TAP, FOCUS_LINE_TAP,
   WORKSPACE_REPOS, WORKSPACE_TREE, SESSIONS,
 } from '../grips';
@@ -69,6 +70,7 @@ function usePalette(): ChatLink[] {
 
 export default function ChatView({ embedded = false }: { embedded?: boolean }) {
   const peers = useGrip(PEERS) ?? [];
+  const sessions = (useGrip(SESSIONS) ?? []) as CommandSession[];
   const messages = useGrip(CHAT_MESSAGES) ?? [];
   const messagesTap = useGrip(CHAT_MESSAGES_TAP);
   const draft = useGrip(CHAT_DRAFT) ?? '';
@@ -76,6 +78,8 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
   const viewTap = useGrip(CURRENT_VIEW_TAP);
   const fileTap = useGrip(SELECTED_FILE_TAP);
   const peerTap = useGrip(SELECTED_PEER_ID_TAP);
+  const sessionTap = useGrip(SELECTED_SESSION_TAP);
+  const targetTap = useGrip(SELECTED_TARGET_TAP);
   const diffLeftTap = useGrip(DIFF_LEFT_TAP);
   const diffRightTap = useGrip(DIFF_RIGHT_TAP);
   const focusLineTap = useGrip(FOCUS_LINE_TAP);
@@ -113,7 +117,16 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
       openInFiles(link.target);
     } else if (link.kind === 'peer') { peerTap?.set(link.target.replace('peer::', '')); viewTap?.set('status'); }
     else if (link.kind === 'repo') { viewTap?.set('status'); }
-    else if (link.kind === 'session') { viewTap?.set('status'); }
+    else if (link.kind === 'session') {
+      const sessionId = link.target.replace('session::', '');
+      const session = sessions.find((item) => item.id === sessionId);
+      if (session) {
+        peerTap?.set(session.peerId);
+        sessionTap?.set(session.id);
+        targetTap?.set(session.targets[0]?.repoPath ?? '');
+      }
+      viewTap?.set('sessions');
+    }
   };
 
   const send = () => {

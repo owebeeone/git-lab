@@ -155,10 +155,10 @@ function wake() {
 }
 
 export const graphEngine = {
-  setInput(repos: RepoStatus[], edges: DependencyEdge[]) {
+  setInput(repos: RepoStatus[], edges: DependencyEdge[], scope = '') {
     const repoPart = repos.map((r) => `${r.path}:${r.head}:${r.dirty}:${r.ahead}:${r.behind}`).join('|');
     const edgePart = edges.map((e) => `${e.source}->${e.target}`).join('|');
-    const key = `${repoPart}::${edgePart}`;
+    const key = `${scope}::${repoPart}::${edgePart}`;
     if (key !== repoKey) { repoKey = key; build(repos, edges); publishFn?.(snapshot()); wake(); }
   },
   attach(fn: (n: GraphRenderNode[]) => void) { publishFn = fn; fn(snapshot()); wake(); },

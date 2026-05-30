@@ -11,7 +11,7 @@ import {
   RUN_REPOS, RUN_REPOS_TAP,
   PURGE_DAYS, PURGE_DAYS_TAP,
   RUN_DIALOG_OPEN, RUN_DIALOG_OPEN_TAP,
-  SESSION_OUTPUT, SESSION_DIAGNOSTICS,
+  SESSION_OUTPUT, SESSION_OUTPUT_SOURCE, SESSION_DIAGNOSTICS,
   PEERS, SELECTED_PEER_ID, THEME,
   WORKSPACE_REPOS,
 } from '../grips';
@@ -153,6 +153,7 @@ export default function SessionsView() {
   const purgeDays = useGrip(PURGE_DAYS) ?? 7;
   const purgeDaysTap = useGrip(PURGE_DAYS_TAP);
   const output = useGrip(SESSION_OUTPUT) ?? '';
+  const outputSource = useGrip(SESSION_OUTPUT_SOURCE) ?? null;
   const diag = useGrip(SESSION_DIAGNOSTICS) ?? { kind: 'none', failed: 0, passed: 0, failures: [] };
   const peers = useGrip(PEERS) ?? [];
   const targetPeer = useGrip(SELECTED_PEER_ID) ?? '';
@@ -182,6 +183,13 @@ export default function SessionsView() {
   const activeTarget = current
     ? (current.targets.find((t) => t.repoPath === selectedTarget) ?? current.targets[0])
     : null;
+  const outputMatchesActive = !!(current && activeTarget && outputSource
+    && outputSource.peerId === current.peerId
+    && outputSource.sessionId === current.id
+    && outputSource.repoPath === activeTarget.repoPath);
+  const terminalContent = activeTarget
+    ? (activeTarget.exitCode == null && outputMatchesActive ? (output || activeTarget.output) : activeTarget.output)
+    : '';
 
   const toggleRepo = (repoPath: string) => {
     runReposTap?.set(runRepos.includes(repoPath) ? runRepos.filter((r) => r !== repoPath) : [...runRepos, repoPath]);
@@ -477,7 +485,7 @@ export default function SessionsView() {
 
               <TerminalPane
                 termKey={`${current.id}::${activeTarget.repoPath}`}
-                content={output}
+                content={terminalContent}
                 interactive={!!current.interactive}
                 dark={theme === 'dark'}
                 sessionId={current.interactive ? current.id : undefined}
