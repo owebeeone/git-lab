@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from griplab_service.vm_manger.griplab_vm import (
+    CommandResult,
     StateError,
     StateStore,
     base_fingerprint,
@@ -15,6 +16,15 @@ from griplab_service.vm_manger.griplab_vm import (
     resolve_network_alias,
     resolved_profile_inputs,
 )
+
+
+class FakeRunner:
+    def __init__(self) -> None:
+        self.commands: list[list[str]] = []
+
+    def run(self, command: list[str]) -> CommandResult:
+        self.commands.append(command)
+        return CommandResult(0, "", "")
 
 
 def test_read_project_config_resolves_profiles_and_aliases(tmp_path) -> None:
@@ -136,6 +146,7 @@ tools = ["python", "uv"]
         encoding="utf-8",
     )
     state_file = tmp_path / "state.json"
+    runner = FakeRunner()
 
     build_exit = main(
         [
@@ -149,7 +160,8 @@ tools = ["python", "uv"]
             "dev",
             "--name",
             "dev-base",
-        ]
+        ],
+        command_runner=runner,
     )
     state_after_build = json.loads(state_file.read_text(encoding="utf-8"))
     list_exit = main(["--state-file", str(state_file), "image", "list"])
@@ -164,6 +176,7 @@ tools = ["python", "uv"]
     assert "dev-base: orbstack profile=dev" in captured.out
     assert "deleted base dev-base" in captured.out
     assert state_after_build["bases"]["dev-base"]["resolved_image"] == "ubuntu:24.04"
+    assert runner.commands == [["orbctl", "create", "ubuntu:24.04", "glvm-base-dev-base"]]
 
 
 def test_native_host_create_info_list_destroy(tmp_path, capsys) -> None:
@@ -328,4 +341,93 @@ network = "none"
     assert calls == [["wsl", "--distribution", "Ubuntu", "--", "uname", "-a"]]
     assert "attached machine magenta (wsl2:Ubuntu)" in captured.out
     assert "detached machine magenta" in captured.out
+    assert state["machines"] == {}
+
+
+def test_orbstack_create_exec_destroy_from_base(tmp_path, capsys) -> None:
+    config_dir = tmp_path / "vm_manage"
+    config_dir.mkdir()
+    (config_dir / "glvm.toml").write_text(
+        """
+default_provider = "orbstack"
+
+[os_aliases]
+ubuntu-lts = "ubuntu:24.04"
+
+[[profiles]]
+name = "dev"
+image = "ubuntu-lts"
+network = "none"
+tools = ["python"]
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    state_file = tmp_path / "state.json"
+    runner = FakeRunner()
+
+    build_exit = main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--state-file",
+            str(state_file),
+            "image",
+            "build",
+            "--profile",
+            "dev",
+            "--name",
+            "dev-base",
+        ],
+        command_runner=runner,
+    )
+    create_exit = main(
+        [
+            "--project-root",
+            str(tmp_path),
+            "--state-file",
+            str(state_file),
+            "create",
+            "--profile",
+            "dev",
+            "--name",
+            "dev-one",
+            "--base",
+            "dev-base",
+        ],
+        command_runner=runner,
+    )
+    exec_exit = main(
+        [
+            "--state-file",
+            str(state_file),
+            "exec",
+            "dev-one",
+            "--",
+            "uname",
+            "-a",
+        ],
+        command_runner=runner,
+    )
+    destroy_exit = main(
+        ["--state-file", str(state_file), "destroy", "dev-one"],
+        command_runner=runner,
+    )
+
+    captured = capsys.readouterr()
+    state = json.loads(state_file.read_text(encoding="utf-8"))
+
+    assert build_exit == 0
+    assert create_exit == 0
+    assert exec_exit == 0
+    assert destroy_exit == 0
+    assert runner.commands == [
+        ["orbctl", "create", "ubuntu:24.04", "glvm-base-dev-base"],
+        ["orbctl", "clone", "glvm-base-dev-base", "glvm-dev-one"],
+        ["orbctl", "run", "--machine", "glvm-dev-one", "--", "uname", "-a"],
+        ["orbctl", "delete", "glvm-dev-one"],
+    ]
+    assert "created machine dev-one (orbstack clone)" in captured.out
+    assert "destroyed machine dev-one" in captured.out
+    assert state["bases"]["dev-base"]["provider_id"] == "glvm-base-dev-base"
     assert state["machines"] == {}

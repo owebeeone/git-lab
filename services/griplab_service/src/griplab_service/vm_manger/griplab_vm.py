@@ -99,6 +99,19 @@ class ProjectConfig:
     network_aliases: dict[str, object]
 
 
+@dataclass(frozen=True)
+class CommandResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+class CommandRunner:
+    def run(self, command: list[str]) -> CommandResult:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+        return CommandResult(result.returncode, result.stdout, result.stderr)
+
+
 class StateError(RuntimeError):
     pass
 
@@ -199,6 +212,7 @@ def build_parser() -> argparse.ArgumentParser:
     create_parser.add_argument("--profile", required=True, help="Profile name")
     create_parser.add_argument("--name", required=True, help="Machine name")
     create_parser.add_argument("--distro", help="Existing WSL distro name to attach")
+    create_parser.add_argument("--base", help="Reusable base name")
 
     destroy_parser = subparsers.add_parser("destroy", help="Destroy a machine")
     destroy_parser.add_argument("name", help="Machine name")
@@ -466,6 +480,13 @@ def state_store_from_args(args: argparse.Namespace) -> StateStore:
     return StateStore(default_state_path())
 
 
+def command_runner_from_args(args: argparse.Namespace) -> CommandRunner:
+    runner = getattr(args, "command_runner", None)
+    if runner is not None:
+        return runner
+    return CommandRunner()
+
+
 def find_profile(config: ProjectConfig, name: str) -> dict[str, object]:
     for profile in config.profiles:
         if profile.get("name") == name:
@@ -562,6 +583,10 @@ def run_image_build(args: argparse.Namespace) -> int:
     provider = choose_provider(config, args.provider)
     inputs = resolved_profile_inputs(config, profile, provider)
     fingerprint = base_fingerprint(inputs)
+    provider_id = f"glvm-base-{args.name}"
+
+    if provider == "orbstack":
+        create_orbstack_base(command_runner_from_args(args), str(inputs["resolved_image"]), provider_id)
 
     store = state_store_from_args(args)
     state = store.read()
@@ -573,7 +598,7 @@ def run_image_build(args: argparse.Namespace) -> int:
     stale = isinstance(previous, dict) and previous.get("fingerprint") != fingerprint
     bases[args.name] = {
         "provider": provider,
-        "provider_id": f"glvm-base-{args.name}",
+        "provider_id": provider_id,
         "profile": args.profile,
         "image_alias": inputs["image_alias"],
         "resolved_image": inputs["resolved_image"],
@@ -590,6 +615,13 @@ def run_image_build(args: argparse.Namespace) -> int:
     status = "rebuilt" if stale else "built"
     print(f"{status} base {args.name} ({provider})")
     return 0
+
+
+def create_orbstack_base(runner: CommandRunner, image: str, provider_id: str) -> None:
+    result = runner.run(["orbctl", "create", image, provider_id])
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "orbctl create failed"
+        raise StateError(message)
 
 
 def run_image_list(args: argparse.Namespace) -> int:
@@ -632,6 +664,8 @@ def run_create(args: argparse.Namespace) -> int:
     config = read_project_config(Path(args.project_root))
     profile = find_profile(config, args.profile)
     provider = choose_provider(config, args.provider)
+    if provider == "orbstack":
+        return run_create_orbstack(args, config, profile)
     if provider == "wsl2":
         return run_create_wsl2(args, config, profile)
     if provider != "native-host":
@@ -664,6 +698,61 @@ def run_create(args: argparse.Namespace) -> int:
     store.write(state)
     print(f"created machine {args.name} (native-host)")
     return 0
+
+
+def run_create_orbstack(
+    args: argparse.Namespace,
+    config: ProjectConfig,
+    profile: dict[str, object],
+) -> int:
+    if not args.base:
+        print("orbstack create requires --base for v1 clone mode")
+        return 2
+
+    store = state_store_from_args(args)
+    state = store.read()
+    machines = state_machines(state)
+    if args.name in machines:
+        print(f"machine already exists: {args.name}")
+        return 2
+    bases = state.get("bases", {})
+    if not isinstance(bases, dict):
+        raise StateError("state field 'bases' must be an object")
+    base = bases.get(args.base)
+    if not isinstance(base, dict):
+        print(f"base not found: {args.base}")
+        return 2
+    if base.get("provider") != "orbstack":
+        print(f"base provider is not orbstack: {base.get('provider')}")
+        return 2
+
+    provider_id = f"glvm-{args.name}"
+    clone_orbstack_machine(command_runner_from_args(args), str(base["provider_id"]), provider_id)
+    inputs = resolved_profile_inputs(config, profile, "orbstack")
+    machines[args.name] = {
+        "provider": "orbstack",
+        "provider_id": provider_id,
+        "profile": args.profile,
+        "base": args.base,
+        "image_alias": inputs["image_alias"],
+        "resolved_image": base.get("resolved_image", inputs["resolved_image"]),
+        "network_alias": inputs["network_alias"],
+        "resolved_network": inputs["resolved_network"],
+        "state": "stopped",
+        "owner": getpass.getuser(),
+        "created_at": utc_now(),
+        "last_seen_at": utc_now(),
+    }
+    store.write(state)
+    print(f"created machine {args.name} (orbstack clone)")
+    return 0
+
+
+def clone_orbstack_machine(runner: CommandRunner, old_name: str, new_name: str) -> None:
+    result = runner.run(["orbctl", "clone", old_name, new_name])
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "orbctl clone failed"
+        raise StateError(message)
 
 
 def run_create_wsl2(
@@ -735,6 +824,12 @@ def run_destroy(args: argparse.Namespace) -> int:
         store.write(state)
         print(f"detached machine {args.name}")
         return 0
+    if machine.get("provider") == "orbstack":
+        delete_orbstack_machine(command_runner_from_args(args), str(machine["provider_id"]))
+        del machines[args.name]
+        store.write(state)
+        print(f"destroyed machine {args.name}")
+        return 0
     if machine.get("provider") != "native-host":
         print(f"provider not implemented for destroy: {machine.get('provider')}")
         return 2
@@ -771,6 +866,15 @@ def run_exec(args: argparse.Namespace) -> int:
             check=False,
         )
         return int(result.returncode)
+    if provider == "orbstack":
+        result = command_runner_from_args(args).run(
+            ["orbctl", "run", "--machine", str(machine["provider_id"]), "--"] + command
+        )
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.stderr:
+            print(result.stderr, end="")
+        return int(result.returncode)
     if provider != "native-host":
         print(f"provider not implemented for exec: {machine.get('provider')}")
         return 2
@@ -779,12 +883,20 @@ def run_exec(args: argparse.Namespace) -> int:
     return int(result.returncode)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def delete_orbstack_machine(runner: CommandRunner, provider_id: str) -> None:
+    result = runner.run(["orbctl", "delete", provider_id])
+    if result.returncode != 0:
+        message = result.stderr.strip() or result.stdout.strip() or "orbctl delete failed"
+        raise StateError(message)
+
+
+def main(argv: Sequence[str] | None = None, command_runner: CommandRunner | None = None) -> int:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code)
+    args.command_runner = command_runner
 
     if args.command == "doctor":
         return run_doctor()
