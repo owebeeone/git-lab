@@ -1,6 +1,7 @@
 // Minimal LCS-based line diff for the mock's side-by-side diff viewer.
+import type { DiffHunk } from './serviceClient/diff';
 
-export type DiffRowKind = 'same' | 'add' | 'del';
+export type DiffRowKind = 'same' | 'add' | 'del' | 'change';
 
 export interface DiffRow {
   kind: DiffRowKind;
@@ -44,4 +45,18 @@ export function lineDiff(a: string, b: string): DiffRow[] {
   while (i < m) { rows.push({ kind: 'del', left: left[i], right: null, leftNo: i + 1, rightNo: null }); i++; }
   while (j < n) { rows.push({ kind: 'add', left: null, right: right[j], leftNo: null, rightNo: j + 1 }); j++; }
   return rows;
+}
+
+export function rowsToDiffHunks(rows: DiffRow[]): DiffHunk[] {
+  if (rows.length === 0) return [];
+  const leftNumbers = rows.map((row) => row.leftNo).filter((n): n is number => n != null);
+  const rightNumbers = rows.map((row) => row.rightNo).filter((n): n is number => n != null);
+  return [{
+    id: 'h000001',
+    leftStart: leftNumbers.length ? Math.min(...leftNumbers) : 1,
+    leftLines: leftNumbers.length,
+    rightStart: rightNumbers.length ? Math.min(...rightNumbers) : 1,
+    rightLines: rightNumbers.length,
+    lines: rows,
+  }];
 }

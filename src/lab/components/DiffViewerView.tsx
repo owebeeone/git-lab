@@ -1,20 +1,23 @@
-import { useGrip } from '@owebeeone/grip-react';
+import { useAtomValueTap, useGrip, useKeyedChildContext } from '@owebeeone/grip-react';
 import {
   PEERS,
   SELECTED_FILE, SELECTED_FILE_TAP,
   DIFF_LEFT, DIFF_LEFT_TAP,
   DIFF_RIGHT, DIFF_RIGHT_TAP,
+  DIFF_WINDOW, DIFF_WINDOW_TAP,
+  ACTIVE_FILE, ACTIVE_FILE_TAP,
   FOCUS_LINE,
+  WORKSPACE_TREE,
 } from '../grips';
-import { FILE_IMAGES } from '../fakeData';
-import type { DiffEndpoint, FileImage, FileRef, Peer } from '../types';
-import { lineDiff } from '../diff';
-import { resolveContent } from '../content';
+import { DIFF_DIAGNOSTICS, DIFF_HUNKS, DIFF_STREAM_STATUS } from '../grips.service';
+import type { DiffEndpoint, FileRef, Peer } from '../types';
 import { dragProps, fileLink, diffLineLink } from '../dnd';
 import Avatar from './Avatar';
 
-function fileKey(f: FileImage) {
-  return `${f.repoPath}::${f.path}`;
+function splitKey(key: string): { repoPath: string; path: string } {
+  const idx = key.indexOf('::');
+  if (idx < 0) return { repoPath: '', path: key };
+  return { repoPath: key.slice(0, idx), path: key.slice(idx + 2) };
 }
 
 function EndpointPicker({
@@ -48,14 +51,25 @@ export default function DiffViewerView() {
   const leftTap = useGrip(DIFF_LEFT_TAP);
   const right = useGrip(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!;
   const rightTap = useGrip(DIFF_RIGHT_TAP);
+  const tree = useGrip(WORKSPACE_TREE) ?? [];
 
   const focusLine = useGrip(FOCUS_LINE) ?? null;
 
-  const file = FILE_IMAGES.find((f) => fileKey(f) === selected) ?? FILE_IMAGES[0];
-  const rows = lineDiff(
-    resolveContent(file, left.peerId, left.ref, peers),
-    resolveContent(file, right.peerId, right.ref, peers),
-  );
+  const fileOptions = tree
+    .filter((entry) => entry.kind === 'file')
+    .map((entry) => ({ key: `${entry.repoPath}::${entry.path}`, repoPath: entry.repoPath, path: entry.path }));
+  const activeFile = selected ?? fileOptions[0]?.key ?? '';
+  const file = splitKey(activeFile);
+  const ctx = useKeyedChildContext('diff:main');
+  useAtomValueTap(ACTIVE_FILE, { ctx: ctx as never, initial: activeFile, tapGrip: ACTIVE_FILE_TAP });
+  useAtomValueTap(DIFF_LEFT, { ctx: ctx as never, initial: left, tapGrip: DIFF_LEFT_TAP });
+  useAtomValueTap(DIFF_RIGHT, { ctx: ctx as never, initial: right, tapGrip: DIFF_RIGHT_TAP });
+  useAtomValueTap(DIFF_WINDOW, { ctx: ctx as never, initial: { lineStart: 0, lineEnd: 400 }, tapGrip: DIFF_WINDOW_TAP });
+
+  const hunks = useGrip(DIFF_HUNKS, ctx) ?? [];
+  const diagnostics = useGrip(DIFF_DIAGNOSTICS, ctx) ?? [];
+  const streamStatus = useGrip(DIFF_STREAM_STATUS, ctx) ?? { status: 'idle', error: null };
+  const rows = hunks.flatMap((hunk) => hunk.lines);
   const leftPeer = peers.find((p) => p.id === left.peerId);
 
   // Scroll the focused row into view when it mounts (ref callback, no effects).
@@ -68,10 +82,10 @@ export default function DiffViewerView() {
       <div className="diff-controls">
         <select
           className="file-select"
-          value={selected ?? fileKey(file)}
+          value={activeFile}
           onChange={(e) => selectTap?.set(e.target.value)}
         >
-          {FILE_IMAGES.map((f) => <option key={fileKey(f)} value={fileKey(f)}>{f.repoPath}/{f.path}</option>)}
+          {fileOptions.map((f) => <option key={f.key} value={f.key}>{f.repoPath}/{f.path}</option>)}
         </select>
         {/* Dragging a <select> is awkward, so this chip is the drag source. */}
         <span
@@ -86,6 +100,13 @@ export default function DiffViewerView() {
       </div>
 
       <div className="diff-table">
+        {streamStatus.status === 'error' && <div className="diag-strip">{streamStatus.error}</div>}
+        {diagnostics.map((diagnostic) => (
+          <div className="diag-strip" key={`${diagnostic.code}:${diagnostic.endpoint ?? 'both'}`}>
+            <strong>{diagnostic.code}</strong>
+            <span>{diagnostic.message}</span>
+          </div>
+        ))}
         {rows.map((r, i) => {
           const isFocus = focusLine != null && (r.leftNo === focusLine || r.rightNo === focusLine);
           return (

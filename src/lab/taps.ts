@@ -47,6 +47,7 @@ import {
 import { registerGraphSimTap } from './graphEngine';
 import { registerFileContentTap } from './fileContentTap';
 import { registerSessionOutputTap } from './sessionOutputTap';
+import { createMockDiffContentTap } from './serviceTaps/mockDiffContentTap';
 import { dependencyEdges, REPO_STATUS_BY_PEER, WORKSPACE_FILES } from './fakeData';
 import type { RepoStatus } from './types';
 
@@ -99,6 +100,7 @@ export function registerLabMockTaps() {
   registerMockWorkspaceTaps();
   registerGraphSimTap();
   registerFileContentTap();
+  grok.registerTap(createMockDiffContentTap());
   registerSessionOutputTap();
 }
 
