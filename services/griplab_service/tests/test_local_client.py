@@ -2,18 +2,18 @@ import json
 import asyncio
 from pathlib import Path
 from urllib.request import urlopen
+import subprocess
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, WSCloseCode
 
 from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
 
 
-def write_config(tmp_path: Path) -> Path:
+def write_config(tmp_path: Path, *, status_poll_interval_ms: int = 1000) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
-    import subprocess
 
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
@@ -27,7 +27,11 @@ def write_config(tmp_path: Path) -> Path:
         "selfPeerId": "me",
         "mode": "client",
         "listen": {"host": "127.0.0.1", "port": 0},
-        "workspace": {"workspaceId": "local-main", "root": "repo"},
+        "workspace": {
+            "workspaceId": "local-main",
+            "root": "repo",
+            "statusPollIntervalMs": status_poll_interval_ms,
+        },
         "peers": [],
     }
     path = tmp_path / "client.json"
@@ -114,6 +118,124 @@ def test_local_client_websocket_protocol(tmp_path: Path) -> None:
             server.stop()
 
     asyncio.run(run())
+
+
+def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=100))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await subscribe_workspace(ws)
+                    first = await ws.receive_json(timeout=2)
+                    assert first["payload"]["seq"] == 1
+                    assert first["payload"]["payload"]["repos"][0]["dirty"] is False
+
+                    try:
+                        await ws.receive_json(timeout=0.25)
+                    except TimeoutError:
+                        pass
+                    else:
+                        raise AssertionError("unchanged poll emitted a duplicate snapshot")
+
+                    (config.workspace.root / "README.md").write_text("changed\n", encoding="utf-8")
+                    changed = await ws.receive_json(timeout=2)
+                    assert changed["payload"]["seq"] == 2
+                    repo = changed["payload"]["payload"]["repos"][0]
+                    assert repo["dirty"] is True
+                    assert repo["changedFiles"] == [{"path": "README.md", "change": "modified"}]
+
+                    (config.workspace.root / "new.txt").write_text("new\n", encoding="utf-8")
+                    untracked = await ws.receive_json(timeout=2)
+                    assert untracked["payload"]["seq"] == 3
+                    paths = {item["path"] for item in untracked["payload"]["payload"]["repos"][0]["changedFiles"]}
+                    assert paths == {"README.md", "new.txt"}
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_workspace_status_refresh_forces_snapshot(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await subscribe_workspace(ws)
+                    await ws.receive_json(timeout=2)
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "workspace.status.refresh",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    response = await ws.receive_json(timeout=2)
+                    assert snapshot["kind"] == "stream-event"
+                    assert snapshot["payload"]["seq"] == 2
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"refreshed": 1}
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_workspace_status_refresh_without_subscriber_is_noop(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=100))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "workspace.status.refresh",
+                        "payload": {},
+                    })
+                    response = await ws.receive_json(timeout=2)
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"refreshed": 0}
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_workspace_status_polling_stops_after_disconnect(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=100))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                ws = await session.ws_connect(server.ws_url)
+                await subscribe_workspace(ws)
+                await ws.receive_json(timeout=2)
+                await ws.close(code=WSCloseCode.GOING_AWAY)
+                await asyncio.sleep(0.25)
+                assert ws.closed
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+async def subscribe_workspace(ws) -> None:
+    await ws.send_json({
+        "messageId": "m000001",
+        "kind": "request",
+        "method": "workspace.status.subscribe",
+        "streamId": "s000001",
+        "payload": {},
+    })
 
 
 def test_probe_cli_prints_probe_payload(tmp_path: Path, capsys) -> None:

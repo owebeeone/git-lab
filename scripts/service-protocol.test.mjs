@@ -90,6 +90,22 @@ transport.push({
 const workspaceStreamEvent = await nextWorkspaceEvent;
 assert.equal(workspaceStreamEvent.value.event, 'snapshot');
 assert.deepEqual(workspaceStreamEvent.value.payload, { repos: [{ path: '', name: 'repo' }] });
+const nextChangedWorkspaceEvent = streamIterator.next();
+transport.push({
+  messageId: transport.sent[1].messageId,
+  kind: 'stream-event',
+  method: 'workspace.status.subscribe',
+  streamId: 's000001',
+  payload: {
+    streamId: 's000001',
+    seq: 2,
+    event: 'snapshot',
+    payload: { repos: [{ path: '', name: 'repo', dirty: true }] },
+  },
+});
+const changedWorkspaceStreamEvent = await nextChangedWorkspaceEvent;
+assert.equal(changedWorkspaceStreamEvent.value.seq, 2);
+assert.deepEqual(changedWorkspaceStreamEvent.value.payload, { repos: [{ path: '', name: 'repo', dirty: true }] });
 
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();

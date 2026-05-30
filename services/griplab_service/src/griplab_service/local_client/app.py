@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import WSMsgType, web
@@ -139,76 +140,158 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     config = request.app[CONFIG_KEY]
     ws = web.WebSocketResponse()
     await ws.prepare(request)
+    connection = WorkspaceStatusConnection(config, ws)
 
-    async for msg in ws:
-        if msg.type != WSMsgType.TEXT:
-            continue
-        try:
-            envelope = envelope_from_json(json.loads(msg.data))
-            response = handle_protocol_message(config, envelope)
-        except (json.JSONDecodeError, KeyError, ProtocolValidationError, ValueError) as exc:
-            response = ProtocolEnvelope.error_response(
-                message_id="invalid",
-                method=None,
-                error=ErrorInfo("bad-message", str(exc)),
-            )
-        if isinstance(response, list):
-            for item in response:
-                await ws.send_json(envelope_to_json(item))
-        else:
-            await ws.send_json(envelope_to_json(response))
+    try:
+        async for msg in ws:
+            if msg.type != WSMsgType.TEXT:
+                continue
+            try:
+                envelope = envelope_from_json(json.loads(msg.data))
+                await handle_protocol_message(connection, envelope)
+            except (json.JSONDecodeError, KeyError, ProtocolValidationError, ValueError) as exc:
+                await connection.send(ProtocolEnvelope.error_response(
+                    message_id="invalid",
+                    method=None,
+                    error=ErrorInfo("bad-message", str(exc)),
+                ))
+    finally:
+        await connection.close()
 
     return ws
 
 
-def handle_protocol_message(
-    config: ServiceConfig,
+async def handle_protocol_message(
+    connection: "WorkspaceStatusConnection",
     envelope: ProtocolEnvelope,
-) -> ProtocolEnvelope | list[ProtocolEnvelope]:
+) -> None:
     if envelope.kind != "request":
-        return ProtocolEnvelope.error_response(
+        await connection.send(ProtocolEnvelope.error_response(
             message_id=envelope.message_id,
             method=envelope.method,
             error=ErrorInfo("bad-kind", "only request envelopes are accepted by the local client"),
-        )
+        ))
+        return
     if envelope.method == "deps.get":
-        return ProtocolEnvelope.response(
+        await connection.send(ProtocolEnvelope.response(
             message_id=envelope.message_id,
             method=envelope.method,
-            payload=deps_payload(config),
-        )
+            payload=deps_payload(connection.config),
+        ))
+        return
     if envelope.method == "workspace.status.subscribe":
         if not envelope.stream_id:
-            return ProtocolEnvelope.error_response(
+            await connection.send(ProtocolEnvelope.error_response(
                 message_id=envelope.message_id,
                 method=envelope.method,
                 error=ErrorInfo("missing-stream-id", "workspace.status.subscribe requires streamId"),
-            )
-        event = StreamEvent(
-            stream_id=envelope.stream_id,
-            seq=1,
-            event="snapshot",
-            payload=workspace_status_payload(config),
-        )
-        return [
-            ProtocolEnvelope.stream_event(
-                message_id=envelope.message_id,
-                method=envelope.method,
-                stream_id=envelope.stream_id,
-                event=event,
-            )
-        ]
-    return ProtocolEnvelope.error_response(
+            ))
+            return
+        await connection.subscribe_workspace_status(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "workspace.status.refresh":
+        refreshed = await connection.refresh_workspace_status(envelope.message_id)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"refreshed": refreshed},
+        ))
+        return
+    await connection.send(ProtocolEnvelope.error_response(
         message_id=envelope.message_id,
         method=envelope.method,
         error=ErrorInfo("unknown-method", f"unknown method: {envelope.method}"),
-    )
+    ))
+
+
+@dataclass
+class WorkspaceStatusStream:
+    message_id: str
+    stream_id: str
+    seq: int = 0
+    last_hash: str | None = None
+    task: asyncio.Task[None] | None = None
+
+
+class WorkspaceStatusConnection:
+    def __init__(self, config: ServiceConfig, ws: web.WebSocketResponse) -> None:
+        self.config = config
+        self.ws = ws
+        self.streams: dict[str, WorkspaceStatusStream] = {}
+        self._send_lock = asyncio.Lock()
+
+    async def send(self, envelope: ProtocolEnvelope) -> None:
+        async with self._send_lock:
+            await self.ws.send_json(envelope_to_json(envelope))
+
+    async def subscribe_workspace_status(self, message_id: str, stream_id: str) -> None:
+        existing = self.streams.get(stream_id)
+        if existing is not None:
+            await self._publish_workspace_status(existing, force=True)
+            return
+        stream = WorkspaceStatusStream(message_id=message_id, stream_id=stream_id)
+        self.streams[stream_id] = stream
+        await self._publish_workspace_status(stream, force=True)
+        stream.task = asyncio.create_task(self._poll_workspace_status(stream))
+
+    async def refresh_workspace_status(self, message_id: str) -> int:
+        del message_id
+        count = 0
+        for stream in list(self.streams.values()):
+            await self._publish_workspace_status(stream, force=True)
+            count += 1
+        return count
+
+    async def close(self) -> None:
+        tasks = [stream.task for stream in self.streams.values() if stream.task is not None]
+        self.streams.clear()
+        for task in tasks:
+            task.cancel()
+        for task in tasks:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def _poll_workspace_status(self, stream: WorkspaceStatusStream) -> None:
+        interval = self.config.workspace.status_poll_interval_ms / 1000
+        try:
+            while stream.stream_id in self.streams:
+                await asyncio.sleep(interval)
+                await self._publish_workspace_status(stream, force=False)
+        except asyncio.CancelledError:
+            raise
+
+    async def _publish_workspace_status(self, stream: WorkspaceStatusStream, *, force: bool) -> bool:
+        payload = workspace_status_payload(self.config)
+        payload_hash = stable_payload_hash(payload)
+        if not force and payload_hash == stream.last_hash:
+            return False
+        stream.last_hash = payload_hash
+        stream.seq += 1
+        event = StreamEvent(
+            stream_id=stream.stream_id,
+            seq=stream.seq,
+            event="snapshot",
+            payload=payload,
+        )
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="workspace.status.subscribe",
+            stream_id=stream.stream_id,
+            event=event,
+        ))
+        return True
 
 
 def workspace_status_payload(config: ServiceConfig) -> dict[str, Any]:
     return {
         "repos": [repo_status_to_json(repo) for repo in collect_workspace_status(config.workspace.root)],
     }
+
+
+def stable_payload_hash(payload: dict[str, Any]) -> str:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
 def deps_payload(config: ServiceConfig) -> dict[str, Any]:

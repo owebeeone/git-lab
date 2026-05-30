@@ -28,17 +28,25 @@ class ListenConfig:
 class WorkspaceConfig:
     workspace_id: str
     root: Path
+    status_poll_interval_ms: int = 1000
 
     @classmethod
     def from_json(cls, value: dict[str, Any], *, base_dir: Path) -> "WorkspaceConfig":
         workspace_id = str(value.get("workspaceId", "local-main"))
         root_value = str(value.get("root", "."))
+        status_poll_interval_ms = int(value.get("statusPollIntervalMs", 1000))
         root = Path(root_value)
         if not root.is_absolute():
             root = (base_dir / root).resolve()
         if not workspace_id:
             raise ValueError("workspace.workspaceId must not be empty")
-        return cls(workspace_id=workspace_id, root=root)
+        if status_poll_interval_ms <= 0:
+            raise ValueError("workspace.statusPollIntervalMs must be positive")
+        return cls(
+            workspace_id=workspace_id,
+            root=root,
+            status_poll_interval_ms=status_poll_interval_ms,
+        )
 
 
 @dataclass(frozen=True)
