@@ -43,6 +43,7 @@ from griplab_service.protocol import (
     envelope_from_json,
     envelope_to_json,
 )
+from griplab_service.ssh_bootstrap import probe_peer
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
 SESSIONS_KEY = web.AppKey("sessions", Any)
@@ -308,6 +309,13 @@ async def handle_protocol_message(
             message_id=envelope.message_id,
             method=envelope.method,
             payload=connection.session_manager.query(envelope.payload),
+        ))
+        return
+    if envelope.method == "peer.probe":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=await asyncio.to_thread(probe_peer, envelope.payload),
         ))
         return
     if envelope.method == "term.open":
