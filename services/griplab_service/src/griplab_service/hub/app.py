@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import ClientSession, WSMsgType, web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from diffstream import (
     DiffDiagnostic,
     DiffEndpoint,
@@ -462,8 +463,19 @@ class HubConnection:
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
+        if self.ws.closed:
+            return
         async with self._send_lock:
-            await self.ws.send_json(envelope_to_json(envelope))
+            if self.ws.closed:
+                return
+            try:
+                await self.ws.send_json(envelope_to_json(envelope))
+            except (ClientConnectionResetError, ConnectionResetError, BrokenPipeError):
+                return
+            except RuntimeError as exc:
+                if is_closing_transport_error(exc):
+                    return
+                raise
 
     async def subscribe_presence(self, message_id: str, stream_id: str) -> None:
         queue = self.registry.add_presence_subscriber()
@@ -1570,6 +1582,11 @@ class PeerRegistry:
             method=routed.caller_method,
             error=ErrorInfo("target-timeout", "target peer did not respond before timeout"),
         ))
+
+
+def is_closing_transport_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "closing transport" in message or "closed transport" in message or "write_eof" in message
 
 
 def diff_payload_from_snapshots(

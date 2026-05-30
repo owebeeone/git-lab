@@ -3,12 +3,14 @@ import json
 from pathlib import Path
 
 from aiohttp import ClientSession, WSCloseCode
+from aiohttp.client_exceptions import ClientConnectionResetError
 from filedelta import LineWindow, make_text_window_snapshot, text_window_snapshot_to_json
 
 from griplab_service.config import load_config
 from griplab_service.hub import HubServer
-from griplab_service.hub.app import REGISTRY_KEY, PeerRegistry
+from griplab_service.hub.app import REGISTRY_KEY, HubConnection, PeerRegistry
 from griplab_service.local_client import LocalClientServer
+from griplab_service.protocol import ProtocolEnvelope
 from test_local_client import write_config
 
 
@@ -87,6 +89,27 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
                     assert alice["status"] == "offline"
         finally:
             server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_connection_send_ignores_closing_transport(tmp_path: Path) -> None:
+    class ClosingWebSocket:
+        closed = False
+
+        async def send_json(self, value: dict[str, object]) -> None:
+            del value
+            raise ClientConnectionResetError("Cannot write to closing transport")
+
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        connection = HubConnection(config, PeerRegistry(config), None, ClosingWebSocket())  # type: ignore[arg-type]
+
+        await connection.send(ProtocolEnvelope.response(
+            message_id="m000001",
+            method="hub.route.subscribe",
+            payload={"ok": True},
+        ))
 
     asyncio.run(run())
 

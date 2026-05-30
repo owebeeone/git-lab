@@ -25,6 +25,7 @@ except ImportError:  # pragma: no cover - Windows hardening is deferred.
     resource = None  # type: ignore[assignment]
 
 from aiohttp import WSMsgType, web
+from aiohttp.client_exceptions import ClientConnectionResetError
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
@@ -559,8 +560,19 @@ class LocalClientConnection:
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
+        if self.ws.closed:
+            return
         async with self._send_lock:
-            await self.ws.send_json(envelope_to_json(envelope))
+            if self.ws.closed:
+                return
+            try:
+                await self.ws.send_json(envelope_to_json(envelope))
+            except (ClientConnectionResetError, ConnectionResetError, BrokenPipeError):
+                return
+            except RuntimeError as exc:
+                if is_closing_transport_error(exc):
+                    return
+                raise
 
     async def subscribe_workspace_status(self, message_id: str, stream_id: str) -> None:
         existing = self.workspace_status_streams.get(stream_id)
@@ -1724,6 +1736,11 @@ def atomic_write_json(path: Path, value: dict[str, object]) -> None:
 
 def safe_store_name(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", value) or "_"
+
+
+def is_closing_transport_error(exc: RuntimeError) -> bool:
+    message = str(exc).lower()
+    return "closing transport" in message or "closed transport" in message or "write_eof" in message
 
 
 def set_pty_size(fd: int, rows: int, cols: int) -> None:
