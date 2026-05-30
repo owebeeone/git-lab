@@ -155,6 +155,29 @@ assert.deepEqual(presenceStreamEvent.value.payload, {
   peers: [{ id: 'alice', name: 'Alice', online: true }],
 });
 
+const chatIterator = client.subscribe('chat.subscribe')[Symbol.asyncIterator]();
+const nextChatEvent = chatIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 5);
+assert.equal(transport.sent[4].method, 'chat.subscribe');
+assert.equal(transport.sent[4].streamId, 's000004');
+transport.push({
+  messageId: transport.sent[4].messageId,
+  kind: 'stream-event',
+  method: 'chat.subscribe',
+  streamId: 's000004',
+  payload: {
+    streamId: 's000004',
+    seq: 1,
+    event: 'snapshot',
+    payload: { messages: [{ id: '1-me-000001', senderId: 'me', ts: 1, text: 'hi', links: [] }] },
+  },
+});
+const chatStreamEvent = await nextChatEvent;
+assert.deepEqual(chatStreamEvent.value.payload, {
+  messages: [{ id: '1-me-000001', senderId: 'me', ts: 1, text: 'hi', links: [] }],
+});
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');

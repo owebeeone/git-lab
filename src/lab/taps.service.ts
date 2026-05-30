@@ -4,6 +4,7 @@ import {
   GRAPH_NODES,
 } from './grips';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
+import { createServiceChatMessagesTap } from './serviceTaps/chatMessagesTap';
 import { createServiceFileContentTap } from './serviceTaps/fileContentTap';
 import { createServicePeersTap } from './serviceTaps/peersTap';
 import { createServiceSessionOutputTap } from './serviceTaps/sessionOutputTap';
@@ -30,6 +31,7 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceFileContentTap());
   grok.registerTap(createServiceSessionsTap());
   grok.registerTap(createServiceSessionOutputTap());
+  grok.registerTap(createServiceChatMessagesTap());
   if (LAB_HUB_PRESENCE) grok.registerTap(createServicePeersTap());
   registerServicePlaceholderTaps();
 }

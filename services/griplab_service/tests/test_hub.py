@@ -74,3 +74,83 @@ def test_hub_peer_hello_and_presence_disconnect(tmp_path: Path) -> None:
             server.stop()
 
     asyncio.run(run())
+
+
+def test_hub_chat_post_subscribe_and_persist_order(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "peer.hello",
+                        "payload": {"peerId": "alice", "name": "Alice"},
+                    })
+                    assert (await ws.receive_json(timeout=2))["payload"] == {"peerId": "alice"}
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "chat.subscribe",
+                        "streamId": "chat0001",
+                        "payload": {},
+                    })
+                    initial = await ws.receive_json(timeout=2)
+                    assert initial["payload"]["payload"] == {"messages": []}
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "chat.post",
+                        "payload": {
+                            "text": "hello",
+                            "links": [{"kind": "repo", "label": "root", "target": "repo::"}],
+                        },
+                    })
+                    posted = await ws.receive_json(timeout=2)
+                    assert posted["kind"] == "response"
+                    message = posted["payload"]["message"]
+                    assert message["senderId"] == "alice"
+                    assert message["text"] == "hello"
+
+                    update = await ws.receive_json(timeout=2)
+                    messages = update["payload"]["payload"]["messages"]
+                    assert [item["id"] for item in messages] == [message["id"]]
+                    assert messages[0]["links"][0]["kind"] == "repo"
+
+                    files = sorted((tmp_path / ".grip-lab" / "chat").glob("*.json"))
+                    assert [path.stem for path in files] == [message["id"]]
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_chat_rejects_malformed_links(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "chat.post",
+                        "payload": {
+                            "text": "bad link",
+                            "links": [{"kind": "bad", "label": "bad", "target": "x"}],
+                        },
+                    })
+                    rejected = await ws.receive_json(timeout=2)
+                    assert rejected["kind"] == "error"
+                    assert rejected["error"]["code"] == "bad-chat-message"
+        finally:
+            server.stop()
+
+    asyncio.run(run())

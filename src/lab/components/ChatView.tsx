@@ -10,9 +10,11 @@ import {
   CHAT_COMPOSER_DRAG, CHAT_COMPOSER_DRAG_TAP,
   CURRENT_VIEW_TAP, SELECTED_FILE_TAP, SELECTED_PEER_ID_TAP,
   DIFF_LEFT_TAP, DIFF_RIGHT_TAP, FOCUS_LINE_TAP,
+  WORKSPACE_REPOS, WORKSPACE_TREE, SESSIONS,
 } from '../grips';
-import { FILE_IMAGES, COMMAND_SESSIONS, REPO_STATUS_BY_PEER, SELF_ID } from '../fakeData';
-import type { ChatLink, ChatMessage } from '../types';
+import { LAB_SERVICE_MODE } from '../dataMode';
+import { postServiceChatMessage } from '../serviceClient/chat';
+import type { ChatLink, ChatMessage, CommandSession, RepoStatus, WorkspaceTreeEntry } from '../types';
 import { parseStateUrl } from '../stateUrl';
 import { useEditor } from '../useEditor';
 import Avatar from './Avatar';
@@ -45,22 +47,24 @@ function MessageBody({ text }: { text: string }) {
   return <>{parts}</>;
 }
 
-// Build the draggable reference palette from the mock dataset.
 function usePalette(): ChatLink[] {
   const peers = useGrip(PEERS) ?? [];
-  const files: ChatLink[] = FILE_IMAGES.map((f) => ({
+  const tree = (useGrip(WORKSPACE_TREE) ?? []) as WorkspaceTreeEntry[];
+  const repos = (useGrip(WORKSPACE_REPOS) ?? []) as RepoStatus[];
+  const sessions = (useGrip(SESSIONS) ?? []) as CommandSession[];
+  const files: ChatLink[] = tree.filter((entry) => entry.kind === 'file').slice(0, 12).map((f) => ({
     kind: 'file', label: `${f.repoPath}/${f.path}`, target: `${f.repoPath}::${f.path}`,
   }));
-  const repos: ChatLink[] = (REPO_STATUS_BY_PEER[SELF_ID] ?? []).map((r) => ({
+  const repoLinks: ChatLink[] = repos.map((r) => ({
     kind: 'repo', label: r.name, target: `repo::${r.path}`,
   }));
   const people: ChatLink[] = peers.filter((p) => !p.isSelf).map((p) => ({
     kind: 'peer', label: p.name, target: `peer::${p.id}`,
   }));
-  const sessions: ChatLink[] = COMMAND_SESSIONS.map((s) => ({
+  const sessionLinks: ChatLink[] = sessions.slice(0, 12).map((s) => ({
     kind: 'session', label: s.argv.slice(0, 3).join(' '), target: `session::${s.id}`,
   }));
-  return [...files, ...repos, ...people, ...sessions];
+  return [...files, ...repoLinks, ...people, ...sessionLinks];
 }
 
 export default function ChatView({ embedded = false }: { embedded?: boolean }) {
@@ -87,6 +91,7 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
   const drag = useGrip(CHAT_COMPOSER_DRAG) ?? null;
   const dragTap = useGrip(CHAT_COMPOSER_DRAG_TAP);
 
+  const selfPeerId = peers.find((p) => p.isSelf)?.id ?? 'me';
   const nameOf = (id: string) => peers.find((p) => p.id === id)?.name ?? id;
 
   const openLink = (link: ChatLink) => {
@@ -114,11 +119,21 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
   const send = () => {
     if (!draft.trim() && pending.length === 0) return;
     const ts = Date.now();
+    const text = draft.trim();
+    if (LAB_SERVICE_MODE) {
+      void postServiceChatMessage({ senderId: selfPeerId, text, links: pending })
+        .then(() => {
+          draftTap?.set('');
+          pendingTap?.set([]);
+        })
+        .catch(() => undefined);
+      return;
+    }
     const msg: ChatMessage = {
-      id: `${ts}-${SELF_ID}-${String(messages.length + 1).padStart(4, '0')}`,
-      senderId: SELF_ID,
+      id: `${ts}-${selfPeerId}-${String(messages.length + 1).padStart(4, '0')}`,
+      senderId: selfPeerId,
       ts,
-      text: draft.trim(),
+      text,
       links: pending,
     };
     messagesTap?.set([...messages, msg]);
@@ -149,7 +164,7 @@ export default function ChatView({ embedded = false }: { embedded?: boolean }) {
           <div
             key={m.id}
             ref={i === messages.length - 1 ? scrollLastIntoView : undefined}
-            className={`chat-msg${m.senderId === SELF_ID ? ' mine' : ''}`}
+            className={`chat-msg${m.senderId === selfPeerId ? ' mine' : ''}`}
           >
             <div className="chat-meta">
               <Avatar peer={peers.find((p) => p.id === m.senderId)} size={18} />

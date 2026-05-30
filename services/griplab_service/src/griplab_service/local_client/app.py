@@ -30,6 +30,7 @@ from filedelta import (
     text_window_delta_to_json,
     text_window_snapshot_to_json,
 )
+from griplab_service.chat_store import ChatStore, chat_store_root
 from griplab_service.config import ServiceConfig
 from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
 from griplab_service.local_client.tree import TreeWatcher, tree_snapshot_payload
@@ -48,6 +49,7 @@ from griplab_service.ssh_bootstrap import EphemeralBootstrapManager, probe_peer
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
 SESSIONS_KEY = web.AppKey("sessions", Any)
 BOOTSTRAPS_KEY = web.AppKey("bootstraps", Any)
+CHAT_KEY = web.AppKey("chat", Any)
 
 
 class LocalClientServer:
@@ -134,6 +136,7 @@ def create_app(config: ServiceConfig) -> web.Application:
     app[CONFIG_KEY] = config
     app[SESSIONS_KEY] = SessionManager(config)
     app[BOOTSTRAPS_KEY] = EphemeralBootstrapManager()
+    app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
     app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
@@ -171,7 +174,13 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     config = request.app[CONFIG_KEY]
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    connection = LocalClientConnection(config, request.app[SESSIONS_KEY], request.app[BOOTSTRAPS_KEY], ws)
+    connection = LocalClientConnection(
+        config,
+        request.app[SESSIONS_KEY],
+        request.app[BOOTSTRAPS_KEY],
+        request.app[CHAT_KEY],
+        ws,
+    )
 
     try:
         async for msg in ws:
@@ -226,6 +235,35 @@ async def handle_protocol_message(
             message_id=envelope.message_id,
             method=envelope.method,
             payload={"refreshed": refreshed},
+        ))
+        return
+    if envelope.method == "chat.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "chat.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_chat(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "chat.post":
+        try:
+            message = connection.chat_store.post(
+                envelope.payload,
+                default_sender_id=connection.config.self_peer_id,
+            )
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-chat-message", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"message": message},
         ))
         return
     if envelope.method == "tree.subscribe":
@@ -431,23 +469,35 @@ class SessionOutputStream:
     task: asyncio.Task[None] | None = None
 
 
+@dataclass
+class ChatStream:
+    message_id: str
+    stream_id: str
+    queue: asyncio.Queue[None]
+    seq: int = 0
+    task: asyncio.Task[None] | None = None
+
+
 class LocalClientConnection:
     def __init__(
         self,
         config: ServiceConfig,
         session_manager: "SessionManager",
         bootstraps: EphemeralBootstrapManager,
+        chat_store: ChatStore,
         ws: web.WebSocketResponse,
     ) -> None:
         self.config = config
         self.session_manager = session_manager
         self.bootstraps = bootstraps
+        self.chat_store = chat_store
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
         self.file_streams: dict[str, FileStream] = {}
         self.sessions_streams: dict[str, SessionsStream] = {}
         self.output_streams: dict[str, SessionOutputStream] = {}
+        self.chat_streams: dict[str, ChatStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -569,17 +619,31 @@ class LocalClientConnection:
         await self._publish_session_output(stream)
         stream.task = asyncio.create_task(self._watch_session_output(stream))
 
+    async def subscribe_chat(self, message_id: str, stream_id: str) -> None:
+        existing = self.chat_streams.get(stream_id)
+        if existing is not None:
+            await self._publish_chat(existing)
+            return
+        queue: asyncio.Queue[None] = asyncio.Queue()
+        self.chat_store.add_subscriber(queue)
+        stream = ChatStream(message_id=message_id, stream_id=stream_id, queue=queue)
+        self.chat_streams[stream_id] = stream
+        await self._publish_chat(stream)
+        stream.task = asyncio.create_task(self._watch_chat(stream))
+
     async def close(self) -> None:
         status_tasks = [stream.task for stream in self.workspace_status_streams.values() if stream.task is not None]
         tree_streams = list(self.tree_streams.values())
         file_streams = list(self.file_streams.values())
         sessions_streams = list(self.sessions_streams.values())
         output_streams = list(self.output_streams.values())
+        chat_streams = list(self.chat_streams.values())
         self.workspace_status_streams.clear()
         self.tree_streams.clear()
         self.file_streams.clear()
         self.sessions_streams.clear()
         self.output_streams.clear()
+        self.chat_streams.clear()
         for stream in tree_streams:
             await self._close_tree_stream(stream)
         for stream in file_streams:
@@ -592,7 +656,13 @@ class LocalClientConnection:
             self.session_manager.remove_output_subscriber(stream.session_id, stream.repo_path, stream.queue)
             if stream.task is not None:
                 stream.task.cancel()
-        tasks = status_tasks + [stream.task for stream in sessions_streams + output_streams if stream.task is not None]
+        for stream in chat_streams:
+            self.chat_store.remove_subscriber(stream.queue)
+            if stream.task is not None:
+                stream.task.cancel()
+        tasks = status_tasks + [
+            stream.task for stream in sessions_streams + output_streams + chat_streams if stream.task is not None
+        ]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -673,6 +743,14 @@ class LocalClientConnection:
         except asyncio.CancelledError:
             raise
 
+    async def _watch_chat(self, stream: ChatStream) -> None:
+        try:
+            while stream.stream_id in self.chat_streams:
+                await stream.queue.get()
+                await self._publish_chat(stream)
+        except asyncio.CancelledError:
+            raise
+
     async def _publish_sessions(self, stream: SessionsStream) -> None:
         stream.seq += 1
         await self.send(ProtocolEnvelope.stream_event(
@@ -698,6 +776,20 @@ class LocalClientConnection:
                 seq=stream.seq,
                 event="snapshot",
                 payload=self.session_manager.output_json(stream.session_id, stream.repo_path),
+            ),
+        ))
+
+    async def _publish_chat(self, stream: ChatStream) -> None:
+        stream.seq += 1
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="chat.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload={"messages": self.chat_store.messages()},
             ),
         ))
 

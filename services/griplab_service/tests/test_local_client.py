@@ -121,6 +121,43 @@ def test_local_client_websocket_protocol(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_local_client_chat_post_and_subscribe(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "chat.subscribe",
+                        "streamId": "chat0001",
+                        "payload": {},
+                    })
+                    initial = await ws.receive_json(timeout=2)
+                    assert initial["payload"]["payload"] == {"messages": []}
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "chat.post",
+                        "payload": {"text": "local hello", "links": []},
+                    })
+                    posted = await ws.receive_json(timeout=2)
+                    assert posted["kind"] == "response"
+                    assert posted["payload"]["message"]["senderId"] == "me"
+
+                    update = await ws.receive_json(timeout=2)
+                    messages = update["payload"]["payload"]["messages"]
+                    assert [message["text"] for message in messages] == ["local hello"]
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
     config = load_config(write_config(tmp_path))
     (config.workspace.root / "src").mkdir()

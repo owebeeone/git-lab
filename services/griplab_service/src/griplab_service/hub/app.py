@@ -11,6 +11,7 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
+from griplab_service.chat_store import ChatStore, chat_store_root
 from griplab_service.config import ServiceConfig
 from griplab_service.protocol import (
     ErrorInfo,
@@ -23,6 +24,7 @@ from griplab_service.protocol import (
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
 REGISTRY_KEY = web.AppKey("registry", Any)
+CHAT_KEY = web.AppKey("chat", Any)
 
 
 class HubServer:
@@ -108,6 +110,7 @@ def create_app(config: ServiceConfig) -> web.Application:
     app = web.Application()
     app[CONFIG_KEY] = config
     app[REGISTRY_KEY] = PeerRegistry()
+    app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
     app.router.add_get("/health", handle_health)
     app.router.add_get("/ws", handle_ws)
     return app
@@ -121,7 +124,7 @@ async def handle_health(request: web.Request) -> web.Response:
 async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    connection = HubConnection(request.app[REGISTRY_KEY], ws)
+    connection = HubConnection(request.app[CONFIG_KEY], request.app[REGISTRY_KEY], request.app[CHAT_KEY], ws)
     try:
         async for msg in ws:
             if msg.type != WSMsgType.TEXT:
@@ -168,6 +171,35 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
             return
         await connection.subscribe_presence(envelope.message_id, envelope.stream_id)
         return
+    if envelope.method == "chat.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "chat.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_chat(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "chat.post":
+        try:
+            message = connection.chat_store.post(
+                envelope.payload,
+                default_sender_id=connection.peer_id or connection.config.self_peer_id,
+            )
+        except ValueError as exc:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("bad-chat-message", str(exc)),
+            ))
+            return
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"message": message},
+        ))
+        return
     await connection.send(ProtocolEnvelope.error_response(
         message_id=envelope.message_id,
         method=envelope.method,
@@ -184,12 +216,30 @@ class PresenceStream:
     task: asyncio.Task[None] | None = None
 
 
+@dataclass
+class ChatStream:
+    message_id: str
+    stream_id: str
+    queue: asyncio.Queue[None]
+    seq: int = 0
+    task: asyncio.Task[None] | None = None
+
+
 class HubConnection:
-    def __init__(self, registry: "PeerRegistry", ws: web.WebSocketResponse) -> None:
+    def __init__(
+        self,
+        config: ServiceConfig,
+        registry: "PeerRegistry",
+        chat_store: ChatStore,
+        ws: web.WebSocketResponse,
+    ) -> None:
+        self.config = config
         self.registry = registry
+        self.chat_store = chat_store
         self.ws = ws
         self.peer_id: str | None = None
         self.presence_streams: dict[str, PresenceStream] = {}
+        self.chat_streams: dict[str, ChatStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -203,6 +253,14 @@ class HubConnection:
         await self._publish_presence(stream)
         stream.task = asyncio.create_task(self._watch_presence(stream))
 
+    async def subscribe_chat(self, message_id: str, stream_id: str) -> None:
+        queue: asyncio.Queue[None] = asyncio.Queue()
+        self.chat_store.add_subscriber(queue)
+        stream = ChatStream(message_id=message_id, stream_id=stream_id, queue=queue)
+        self.chat_streams[stream_id] = stream
+        await self._publish_chat(stream)
+        stream.task = asyncio.create_task(self._watch_chat(stream))
+
     async def close(self) -> None:
         if self.peer_id:
             self.registry.mark_offline(self.peer_id)
@@ -213,6 +271,19 @@ class HubConnection:
             if stream.task is not None:
                 stream.task.cancel()
         for stream in streams:
+            if stream.task is None:
+                continue
+            try:
+                await stream.task
+            except asyncio.CancelledError:
+                pass
+        chat_streams = list(self.chat_streams.values())
+        self.chat_streams.clear()
+        for stream in chat_streams:
+            self.chat_store.remove_subscriber(stream.queue)
+            if stream.task is not None:
+                stream.task.cancel()
+        for stream in chat_streams:
             if stream.task is None:
                 continue
             try:
@@ -239,6 +310,28 @@ class HubConnection:
                 seq=stream.seq,
                 event="snapshot",
                 payload={"peers": self.registry.peers_json()},
+            ),
+        ))
+
+    async def _watch_chat(self, stream: ChatStream) -> None:
+        try:
+            while stream.stream_id in self.chat_streams:
+                await stream.queue.get()
+                await self._publish_chat(stream)
+        except asyncio.CancelledError:
+            raise
+
+    async def _publish_chat(self, stream: ChatStream) -> None:
+        stream.seq += 1
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="chat.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload={"messages": self.chat_store.messages()},
             ),
         ))
 
