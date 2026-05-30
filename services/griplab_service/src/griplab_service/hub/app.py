@@ -973,6 +973,10 @@ class PeerRegistry:
                 error=ErrorInfo("missing-method", "routed request requires method"),
             ))
             return
+        target_connection = self.connections.get(target_peer_id)
+        if target_connection is not None:
+            await self._route_request_direct(caller, envelope, target_connection, method, payload)
+            return
         tunnel = self.tunnels.get(target_peer_id)
         if tunnel is not None:
             if not self._peer_is_online(target_peer_id):
@@ -989,6 +993,16 @@ class PeerRegistry:
             return
         target_peer_id, target_connection, method, payload = target
         del target_peer_id
+        await self._route_request_direct(caller, envelope, target_connection, method, payload)
+
+    async def _route_request_direct(
+        self,
+        caller: HubConnection,
+        envelope: ProtocolEnvelope,
+        target_connection: HubConnection,
+        method: str,
+        payload: dict[str, Any],
+    ) -> None:
         target_message_id = self._next_relay_message_id()
         routed = RoutedRequest(
             caller=caller,
@@ -1063,6 +1077,10 @@ class PeerRegistry:
         method = str(envelope.payload.get("method", ""))
         payload_value = envelope.payload.get("payload", {})
         payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+        target_connection = self.connections.get(target_peer_id)
+        if target_peer_id and method and target_connection is not None:
+            await self._route_subscribe_direct(caller, envelope, target_connection, method, payload)
+            return
         tunnel = self.tunnels.get(target_peer_id)
         if tunnel is not None:
             if not self._peer_is_online(target_peer_id):
@@ -1101,6 +1119,17 @@ class PeerRegistry:
             return
         target_peer_id, target_connection, method, payload = target
         del target_peer_id
+        await self._route_subscribe_direct(caller, envelope, target_connection, method, payload)
+
+    async def _route_subscribe_direct(
+        self,
+        caller: HubConnection,
+        envelope: ProtocolEnvelope,
+        target_connection: HubConnection,
+        method: str,
+        payload: dict[str, Any],
+    ) -> None:
+        assert envelope.stream_id is not None
         target_message_id = self._next_relay_message_id()
         target_stream_id = self._next_relay_stream_id()
         stream = RoutedStream(

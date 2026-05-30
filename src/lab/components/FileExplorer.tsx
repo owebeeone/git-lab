@@ -148,6 +148,7 @@ export default function FileExplorer({
   const initialSnapshotReady = treeStatus.status === 'idle' && rawTree.length > 0;
   const treeReadyForPeer = (statusMatchesPeer && treeStatus.status === 'ready') || initialSnapshotReady;
   const loadingTree = statusMatchesPeer && treeStatus.status === 'loading';
+  const treeError = statusMatchesPeer && treeStatus.status === 'error';
   const tree = buildTree(treeReadyForPeer ? rawTree : [], repos);
   const collapsedToggleList = useGrip(EXPLORER_COLLAPSED) ?? [];
   const collapsedTap = useGrip(EXPLORER_COLLAPSED_TAP);
@@ -240,8 +241,8 @@ export default function FileExplorer({
       <aside className="explorer" style={{ width }}>
         <div className="explorer-head">
           <span>Explorer</span>
-          <span className={`explorer-state ${loadingTree ? 'loading' : treeReadyForPeer ? 'ready' : 'idle'}`}>
-            {loadingTree ? `Loading ${peerName}` : treeReadyForPeer ? `${rawTree.length} files` : 'Waiting'}
+          <span className={`explorer-state ${treeError ? 'error' : loadingTree ? 'loading' : treeReadyForPeer ? 'ready' : 'idle'}`}>
+            {treeError ? 'Error' : loadingTree ? `Loading ${peerName}` : treeReadyForPeer ? `${rawTree.length} files` : 'Waiting'}
           </span>
           <button className="ghost explorer-collapse" onClick={() => openTap?.set(false)} title="Hide explorer">‹</button>
         </div>
@@ -252,7 +253,12 @@ export default function FileExplorer({
               <span>Loading file tree for {peerName}…</span>
             </div>
           )}
-          {!loadingTree && !treeReadyForPeer && (
+          {treeError && (
+            <div className="tree-loading error">
+              <span>{treeStatus.error ?? 'File tree failed to load.'}</span>
+            </div>
+          )}
+          {!loadingTree && !treeError && !treeReadyForPeer && (
             <div className="tree-loading muted">
               <span>Waiting for file tree…</span>
             </div>

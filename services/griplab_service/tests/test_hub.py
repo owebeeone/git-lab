@@ -361,6 +361,52 @@ def test_hub_routes_request_to_target_peer(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_hub_routes_request_to_direct_peer_when_tunnel_is_registered(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            assert server._runner is not None
+            registry = server._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
+            registry.register_tunnel("target", local_peer_port=9)
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.request",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.ping",
+                            "payload": {"value": 42},
+                        },
+                    })
+                    routed = await target.receive_json(timeout=2)
+                    assert routed["kind"] == "request"
+                    assert routed["method"] == "echo.ping"
+                    assert routed["payload"] == {"value": 42}
+
+                    await target.send_json({
+                        "messageId": routed["messageId"],
+                        "kind": "response",
+                        "method": "echo.ping",
+                        "payload": {"ok": True, "value": 42},
+                    })
+                    response = await caller.receive_json(timeout=2)
+                    assert response["kind"] == "response"
+                    assert response["payload"] == {"ok": True, "value": 42}
+
+                    await target.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_hub_routes_request_through_registered_tunnel(tmp_path: Path) -> None:
     async def run() -> None:
         hub_root = tmp_path / "hub"
@@ -381,11 +427,9 @@ def test_hub_routes_request_through_registered_tunnel(tmp_path: Path) -> None:
             assert hub._runner is not None
             registry = hub._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
             registry.register_tunnel("target", local_peer_port=int(local.url.rsplit(":", 1)[1]))
+            registry.hello({"peerId": "target", "name": "Target"})
             async with ClientSession() as session:
                 async with session.ws_connect(hub.ws_url) as caller:
-                    target = await session.ws_connect(hub.ws_url)
-                    await hello_peer(target, "target")
-
                     await caller.send_json({
                         "messageId": "m000001",
                         "kind": "request",
@@ -399,7 +443,6 @@ def test_hub_routes_request_through_registered_tunnel(tmp_path: Path) -> None:
                     response = await caller.receive_json(timeout=2)
                     assert response["kind"] == "response"
                     assert response["payload"] == {"repos": [""], "edges": [], "errors": {}}
-                    await target.close()
         finally:
             local.stop()
             hub.stop()
@@ -427,11 +470,9 @@ def test_hub_routes_subscription_through_registered_tunnel(tmp_path: Path) -> No
             assert hub._runner is not None
             registry = hub._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
             registry.register_tunnel("target", local_peer_port=int(local.url.rsplit(":", 1)[1]))
+            registry.hello({"peerId": "target", "name": "Target"})
             async with ClientSession() as session:
                 async with session.ws_connect(hub.ws_url) as caller:
-                    target = await session.ws_connect(hub.ws_url)
-                    await hello_peer(target, "target")
-
                     await caller.send_json({
                         "messageId": "m000001",
                         "kind": "request",
@@ -450,7 +491,6 @@ def test_hub_routes_subscription_through_registered_tunnel(tmp_path: Path) -> No
                     assert event["payload"]["streamId"] == "caller-tree"
                     assert event["payload"]["event"] == "snapshot"
                     assert event["payload"]["payload"]["entries"]
-                    await target.close()
         finally:
             local.stop()
             hub.stop()
@@ -508,6 +548,61 @@ def test_hub_routes_subscription_events_to_caller_stream(tmp_path: Path) -> None
                         "event": "snapshot",
                         "payload": {"items": [1, 2, 3]},
                     }
+
+                    await target.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routes_subscription_to_direct_peer_when_tunnel_is_registered(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            assert server._runner is not None
+            registry = server._runner.app[REGISTRY_KEY]  # type: ignore[union-attr]
+            registry.register_tunnel("target", local_peer_port=9)
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.subscribe",
+                        "streamId": "caller-stream",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.subscribe",
+                            "payload": {"topic": "demo"},
+                        },
+                    })
+                    routed = await target.receive_json(timeout=2)
+                    assert routed["kind"] == "request"
+                    assert routed["method"] == "echo.subscribe"
+                    assert routed["streamId"] != "caller-stream"
+                    assert routed["payload"] == {"topic": "demo"}
+
+                    await target.send_json({
+                        "messageId": routed["messageId"],
+                        "kind": "stream-event",
+                        "method": "echo.subscribe",
+                        "streamId": routed["streamId"],
+                        "payload": {
+                            "streamId": routed["streamId"],
+                            "seq": 1,
+                            "event": "snapshot",
+                            "payload": {"items": [1, 2, 3]},
+                        },
+                    })
+                    event = await caller.receive_json(timeout=2)
+                    assert event["kind"] == "stream-event"
+                    assert event["streamId"] == "caller-stream"
+                    assert event["payload"]["payload"] == {"items": [1, 2, 3]}
 
                     await target.close()
         finally:

@@ -243,6 +243,7 @@
 .explorer-state { margin-left: auto; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-size: var(--ui-font-xs); }
 .explorer-state.loading { color: var(--accent); }
 .explorer-state.ready { color: var(--muted); }
+.explorer-state.error { color: var(--err); }
 .explorer-collapse { font-size: 0.9rem; line-height: 1; padding: 0 6px; }
 .explorer-resizer { flex: 0 0 6px; width: 6px; cursor: col-resize; background: var(--border); }
 .explorer-resizer:hover { background: var(--accent-line); }
@@ -254,6 +255,7 @@
 .explorer-collapsed-tab:hover { background: var(--card); }
 .explorer-tree { overflow: auto; flex: 1 1 auto; padding: 4px 0; }
 .tree-loading { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: var(--ui-font-sm); color: var(--muted); }
+.tree-loading.error { align-items: flex-start; color: var(--err); white-space: normal; }
 .mini-spinner { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .tree-row { display: flex; align-items: center; gap: 6px; width: 100%; background: transparent; border: none; color: var(--text); padding: 4px 8px; cursor: pointer; font-size: var(--ui-font); text-align: left; }

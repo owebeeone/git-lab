@@ -28,10 +28,19 @@ export function createServiceTreeTap(client: ServiceClient = defaultServiceClien
       return client.subscribe('tree.subscribe', {}, signal);
     },
     mapEvent: (params, event) => {
-      const payload = event.payload as unknown as TreePayload;
       const peerId = routePeer(params);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const values = new Map<any, any>();
+      if (event.event === 'error') {
+        const message = typeof event.payload.message === 'string'
+          ? event.payload.message
+          : 'File tree stream failed.';
+        values.set(WORKSPACE_TREE, []);
+        values.set(WORKSPACE_TREE_VERSION, '');
+        values.set(WORKSPACE_TREE_STATUS, { peerId, status: 'error', error: message });
+        return values;
+      }
+      const payload = event.payload as unknown as TreePayload;
       values.set(WORKSPACE_TREE, payload.entries ?? []);
       values.set(WORKSPACE_TREE_VERSION, payload.version ?? '');
       values.set(WORKSPACE_TREE_STATUS, { peerId, status: 'ready', error: null });
