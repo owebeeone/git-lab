@@ -758,8 +758,10 @@ Deliverables:
 
 - service `diffContentTap.ts` using `createAsyncStreamMultiTap`.
 - grips for diff hunks, diagnostics, stream status, and version.
+- `DIFF_WINDOW` as the diff-specific window input grip.
 - `DiffViewerView` renders structured hunks from `diff.subscribe`.
 - diff view uses a keyed context such as `diff:main`.
+- mock mode emits the same structured hunk model at the tap boundary.
 - existing state links still restore selected file, endpoints, and focus line.
 - `DiffViewerView` no longer imports static file content for service mode.
 
@@ -767,6 +769,8 @@ Verification:
 
 - diff view compares two peers/refs from a synthetic diff stream.
 - diagnostics render without crashing the diff view.
+- mock diff behavior remains available and renders through the same structured
+  hunk path.
 - source scan confirms service-mode diff path no longer depends on static file
   content.
 

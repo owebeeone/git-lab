@@ -40,9 +40,14 @@ It is not a normal workspace file and should not be addressed through
 
 ## Protocol
 
-`diff.subscribe` is a normal service subscription and uses the standard
-websocket envelope from `GLServicesDesign.md`. The client allocates `msgId` and
-`streamId`; the hub owns the synthetic `diffId` and payload `version`.
+`diff.subscribe` is a normal service subscription and uses the implemented
+service envelope in `services/griplab_service/src/griplab_service/protocol/`
+and `src/lab/serviceClient/protocol.ts`: `messageId`, `kind`, `method`,
+optional `streamId`, and nested stream-event payloads. `GLServicesDesign.md` §4
+still has older envelope examples and needs a separate reconciliation pass.
+
+The client allocates `messageId` and `streamId`; the hub owns the synthetic
+`diffId` and payload `version`.
 
 ### `diff.subscribe`
 
@@ -105,7 +110,35 @@ Stream event envelope:
     "streamId": "s000042",
     "seq": 1,
     "event": "snapshot",
-    "payload": {}
+    "payload": {
+      "contentType": "application/vnd.griplab.diff+json;version=1",
+      "diffId": "diff-000001",
+      "version": "dv000001",
+      "left": {
+        "peerId": "me",
+        "repoPath": "",
+        "path": "src/app.ts",
+        "ref": { "kind": "working" },
+        "fileVersion": "fv000010",
+        "contentHash": "sha256:..."
+      },
+      "right": {
+        "peerId": "alice",
+        "repoPath": "",
+        "path": "src/app.ts",
+        "ref": { "kind": "working" },
+        "fileVersion": "fv000007",
+        "contentHash": "sha256:..."
+      },
+      "window": {
+        "lineStart": 0,
+        "lineEnd": 400,
+        "truncated": false
+      },
+      "hunks": [],
+      "unifiedText": null,
+      "diagnostics": []
+    }
   }
 }
 ```
@@ -147,17 +180,62 @@ Inner event payload:
 `contentType` is the payload format source of truth. There is no separate
 `format` request field in v1.
 
+`diffId` is stable for the lifetime of one shared `DiffConnection`. Payload
+`version` is monotonic per recompute (`dv000001`, `dv000002`, ...). Hunk ids are
+stable only within a single payload `version` in v1.
+
+### Endpoint Resolution
+
+Diff endpoints are `{ peerId, repoPath, path, ref }` in v1. The hub resolves
+`peerId` through the peer registry to the peer's active workspace. Endpoints do
+not include `workspaceId` until multi-workspace-per-peer support is designed.
+
+The initial UI scope is same-path diff: `left.path` and `right.path` must match.
+Cross-path diff is deferred; v1 rejects mismatched paths with a `bad-request`
+error or a structured diagnostic.
+
+### `contextLines`
+
+`contextLines` expands the effective source read window symmetrically before
+diffing:
+
+```text
+effectiveLineStart = max(0, window.lineStart - contextLines)
+effectiveLineEnd   = window.lineEnd + contextLines
+```
+
+The hub opens internal source subscriptions using this effective text window.
+Hunks may include context lines outside the visible requested window. In v1,
+`contextLines` is set at `diff.subscribe` time and is part of the shared
+`DiffConnection` key; `diff.window.update` changes only the requested window.
+
 ### `diff.window.update`
 
 Updates the requested source window for an existing diff stream.
 
 ```json
 {
-  "streamId": "s000042",
-  "window": {
-    "lineStart": 120,
-    "lineEnd": 260
+  "messageId": "m000002",
+  "kind": "request",
+  "method": "diff.window.update",
+  "payload": {
+    "streamId": "s000042",
+    "window": {
+      "lineStart": 120,
+      "lineEnd": 260
+    }
   }
+}
+```
+
+Response:
+
+```json
+{
+  "messageId": "m000002",
+  "kind": "response",
+  "method": "diff.window.update",
+  "payload": { "updated": true }
 }
 ```
 
@@ -171,7 +249,10 @@ underlying `DiffConnection` once its reference count reaches zero.
 
 ```json
 {
-  "streamId": "s000042"
+  "messageId": "m000003",
+  "kind": "request",
+  "method": "diff.unsubscribe",
+  "payload": { "streamId": "s000042" }
 }
 ```
 
@@ -181,6 +262,18 @@ underlying `DiffConnection` once its reference count reaches zero.
 non-live tooling. It should return the same structured payload shape as
 `diff.subscribe`, optionally with `unifiedText` populated when requested. It has
 no stream lifecycle and is not the primary live diff path.
+
+Request payload:
+
+```json
+{
+  "left": { "peerId": "me", "repoPath": "", "path": "src/app.ts", "ref": { "kind": "working" } },
+  "right": { "peerId": "alice", "repoPath": "", "path": "src/app.ts", "ref": { "kind": "working" } },
+  "window": { "lineStart": 0, "lineEnd": 400 },
+  "contextLines": 3,
+  "includeUnifiedText": true
+}
+```
 
 ## Structured Diff Format
 
@@ -228,6 +321,11 @@ The requested `window` remains zero-based and half-open, matching
 `GLDeltaFileProtocolLib.md`. Hunk `leftNo` and `rightNo` are absolute one-based
 source-file display lines, not window-relative line numbers.
 
+Hunk `leftStart`, `leftLines`, `rightStart`, and `rightLines` are required
+producer fields. They are derivable from `lines[]`, but keeping them explicit
+makes virtualized rendering and hunk-level navigation cheaper and avoids every
+client reimplementing the same aggregation.
+
 `kind` values:
 
 - `same`
@@ -247,6 +345,11 @@ to the same structured-hunk model; service mode is authoritative.
 The hub should compute over decoded text for files identified as text by the
 file stream layer. Binary or undecodable inputs return a structured diagnostic
 instead of a hunk list.
+
+Internal source subscriptions use `contentMode: "text-window"` with the
+effective window derived from `window + contextLines`. Full-file live diff is
+out of scope for v1; `diff.get` is the one-shot path for export or full-file
+comparisons.
 
 ### Synthetic Resource
 
@@ -282,13 +385,22 @@ publish a diff snapshot computed from a partially applied source delta.
 If either source is mid-reset, the diff stream reports a diagnostic until both
 source sides have fresh valid snapshots.
 
+### Reconnect And Resubscribe
+
+In v1, browser reconnect always opens a fresh `diff.subscribe` with a new
+`streamId`; the client discards any prior diff `version`. The hub may reuse an
+existing shared `DiffConnection` if its ref count is still non-zero and the diff
+key matches. Once the last subscriber leaves, the hub may close the
+`DiffConnection`; a later subscribe gets a new `diffId`.
+
 ### Updates
 
 For v1:
 
 - source file update -> recompute and send full synthetic diff snapshot
 - source stream reset -> recompute after both sides are valid again
-- source stream error -> emit diff diagnostic snapshot or stream error
+- source stream error -> emit diff diagnostic snapshot when the stream remains
+  usable, or a stream error for fatal hub/internal failures
 - diff window move -> reset/recompute
 
 Do not attempt structured diff deltas until the snapshot format and renderer are
@@ -305,13 +417,14 @@ Suggested grips:
 - `DIFF_STREAM_STATUS`
 - `DIFF_DIAGNOSTICS`
 - `DIFF_VERSION`
+- `DIFF_WINDOW`
 
 Inputs:
 
 - `SELECTED_FILE`
 - `DIFF_LEFT`
 - `DIFF_RIGHT`
-- a diff window grip, likely separate from `FILE_WINDOW`
+- `DIFF_WINDOW`
 
 Request keys include selected file, left endpoint, right endpoint, window, and
 destination context key. `DiffViewerView` should use a keyed context such as
@@ -320,6 +433,11 @@ panes.
 
 The browser sends debounced `diff.window.update` messages for scroll/window
 changes. It does not open the two source file streams itself in service mode.
+
+Mock mode should migrate to the same structured-hunk shape at the tap boundary
+in Step 10E, even if the mock producer still uses the current TypeScript LCS
+helper internally. This keeps the renderer consuming one data model in both
+mock and service modes.
 
 ## Renderer Options
 
@@ -388,6 +506,15 @@ Initial v1 codes:
 When diagnostics are present, `hunks` may be empty or partial. `unifiedText` is
 `null` unless explicitly requested and safely available.
 
+Delivery rules:
+
+| Condition | Delivery |
+| --- | --- |
+| Bad `diff.subscribe` arguments | Error response to the request |
+| Transient source peer offline | Snapshot/reset with `peer-offline` diagnostic |
+| Source file missing/binary/decode issue | Snapshot with endpoint diagnostic |
+| Fatal hub/internal failure | Stream `error` event or connection-level error |
+
 ## Error And Edge Cases
 
 - Missing left or right file: structured diagnostic with the missing endpoint.
@@ -399,7 +526,7 @@ When diagnostics are present, `hunks` may be empty or partial. `unifiedText` is
 
 ## Verification
 
-Python tests:
+Step 10D Python tests:
 
 - structured hunk conversion for same/add/delete/replace cases
 - missing left/right endpoint diagnostics
@@ -410,14 +537,18 @@ Python tests:
 - shared `DiffConnection` reference count closes source streams after the last
   subscriber
 
-TypeScript/front-end tests:
+Step 10D TypeScript/protocol tests:
 
 - protocol parser accepts `diff.subscribe` payloads and structured snapshots
+
+Step 10E front-end tests:
+
 - `diffContentTap` maps snapshots to diff grips
 - `DiffViewerView` renders structured hunks without `fakeData` in service mode
+- mock diff path emits the same structured hunk model at the tap boundary
 - state links still restore selected file, endpoints, and focus line
 
-Integration tests:
+Step 10D integration tests:
 
 - two local service peers through the hub produce a routed synthetic diff
 - source file edit on either peer updates the diff stream
