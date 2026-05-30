@@ -17,6 +17,12 @@ export function createServicePeersTap(client: ServiceClient = defaultServiceClie
       const payload = parsePeerPresencePayload(event.payload);
       return new Map([[PEERS, payload.peers as Peer[]]]);
     },
-    initialState: [[PEERS, []]],
+    getResetUpdates: () => new Map(),
+    retry: {
+      initialDelayMs: 500,
+      maxDelayMs: 5000,
+      backoffMultiplier: 2,
+      jitterRatio: 0.4,
+    },
   }) as unknown as Tap;
 }

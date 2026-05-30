@@ -16,6 +16,8 @@ from griplab_service.ssh_bootstrap import (
     prepare_remote_client,
     parse_ssh_target,
     remote_start_command,
+    scp_base_command,
+    ssh_base_command,
 )
 
 from fixtures.ssh_env import SshTestEnvError, SshTestEnvironment, find_ssh_tooling, shell_quote
@@ -57,6 +59,25 @@ def test_tunnel_command_has_local_and_remote_forwards() -> None:
     assert "-L" in command
     assert "127.0.0.1:42001:127.0.0.1:3141" in command
     assert command[-1] == "alice@example.invalid"
+
+
+def test_ssh_commands_use_agent_keys_without_explicit_identity() -> None:
+    ssh_command = ssh_base_command({"sshAddress": "alice@example.invalid:2222"})
+    scp_command = scp_base_command({"sshAddress": "alice@example.invalid:2222"})
+
+    assert "IdentitiesOnly=yes" not in ssh_command
+    assert "IdentitiesOnly=yes" not in scp_command
+
+
+def test_ssh_commands_pin_identity_when_configured() -> None:
+    payload = {"sshAddress": "alice@example.invalid:2222", "identityFile": "id_ed25519"}
+    ssh_command = ssh_base_command(payload)
+    scp_command = scp_base_command(payload)
+
+    assert "IdentitiesOnly=yes" in ssh_command
+    assert ssh_command[ssh_command.index("-i") + 1] == "id_ed25519"
+    assert "IdentitiesOnly=yes" in scp_command
+    assert scp_command[scp_command.index("-i") + 1] == "id_ed25519"
 
 
 def test_start_command_wraps_dual_forwards_and_logs() -> None:

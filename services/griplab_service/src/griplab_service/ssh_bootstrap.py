@@ -518,8 +518,6 @@ def ssh_base_command(payload: dict[str, Any]) -> list[str]:
         "-o",
         "BatchMode=yes",
         "-o",
-        "IdentitiesOnly=yes",
-        "-o",
         "PasswordAuthentication=no",
         "-o",
         "KbdInteractiveAuthentication=no",
@@ -540,6 +538,7 @@ def ssh_base_command(payload: dict[str, Any]) -> list[str]:
         ])
     identity_file = payload.get("identityFile")
     if identity_file:
+        cmd.extend(["-o", "IdentitiesOnly=yes"])
         cmd.extend(["-i", str(identity_file)])
     return cmd
 
@@ -555,8 +554,6 @@ def scp_base_command(payload: dict[str, Any]) -> list[str]:
         "/dev/null",
         "-o",
         "BatchMode=yes",
-        "-o",
-        "IdentitiesOnly=yes",
         "-o",
         "PasswordAuthentication=no",
         "-o",
@@ -576,6 +573,7 @@ def scp_base_command(payload: dict[str, Any]) -> list[str]:
         ])
     identity_file = payload.get("identityFile")
     if identity_file:
+        cmd.extend(["-o", "IdentitiesOnly=yes"])
         cmd.extend(["-i", str(identity_file)])
     return cmd
 
