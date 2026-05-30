@@ -645,6 +645,9 @@ def run_image_delete(args: argparse.Namespace) -> int:
     if not isinstance(bases, dict):
         raise StateError("state field 'bases' must be an object")
     if args.name in bases:
+        base = bases[args.name]
+        if isinstance(base, dict) and base.get("provider") == "orbstack":
+            delete_orbstack_machine(command_runner_from_args(args), str(base["provider_id"]))
         del bases[args.name]
         store.write(state)
         print(f"deleted base {args.name}")
@@ -868,7 +871,7 @@ def run_exec(args: argparse.Namespace) -> int:
         return int(result.returncode)
     if provider == "orbstack":
         result = command_runner_from_args(args).run(
-            ["orbctl", "run", "--machine", str(machine["provider_id"]), "--"] + command
+            ["orbctl", "run", "--machine", str(machine["provider_id"])] + command
         )
         if result.stdout:
             print(result.stdout, end="")

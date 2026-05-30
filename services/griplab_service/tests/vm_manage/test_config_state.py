@@ -165,7 +165,10 @@ tools = ["python", "uv"]
     )
     state_after_build = json.loads(state_file.read_text(encoding="utf-8"))
     list_exit = main(["--state-file", str(state_file), "image", "list"])
-    delete_exit = main(["--state-file", str(state_file), "image", "delete", "dev-base"])
+    delete_exit = main(
+        ["--state-file", str(state_file), "image", "delete", "dev-base"],
+        command_runner=runner,
+    )
 
     captured = capsys.readouterr()
 
@@ -176,7 +179,10 @@ tools = ["python", "uv"]
     assert "dev-base: orbstack profile=dev" in captured.out
     assert "deleted base dev-base" in captured.out
     assert state_after_build["bases"]["dev-base"]["resolved_image"] == "ubuntu:24.04"
-    assert runner.commands == [["orbctl", "create", "ubuntu:24.04", "glvm-base-dev-base"]]
+    assert runner.commands == [
+        ["orbctl", "create", "ubuntu:24.04", "glvm-base-dev-base"],
+        ["orbctl", "delete", "glvm-base-dev-base"],
+    ]
 
 
 def test_native_host_create_info_list_destroy(tmp_path, capsys) -> None:
@@ -424,7 +430,7 @@ tools = ["python"]
     assert runner.commands == [
         ["orbctl", "create", "ubuntu:24.04", "glvm-base-dev-base"],
         ["orbctl", "clone", "glvm-base-dev-base", "glvm-dev-one"],
-        ["orbctl", "run", "--machine", "glvm-dev-one", "--", "uname", "-a"],
+        ["orbctl", "run", "--machine", "glvm-dev-one", "uname", "-a"],
         ["orbctl", "delete", "glvm-dev-one"],
     ]
     assert "created machine dev-one (orbstack clone)" in captured.out
