@@ -29,6 +29,9 @@ class BootstrapProcess:
     peer_id: str
     local_port: int
     remote_port: int
+    remote_hub_port: int
+    log_stdout: str
+    log_stderr: str
     process: subprocess.Popen[bytes]
 
 
@@ -85,6 +88,9 @@ class EphemeralBootstrapManager:
         peer_id = str(payload.get("peerId", bootstrap_id))
         remote_port = int(payload.get("remotePort", 3141))
         local_port = int(payload.get("localPort", 0)) or allocate_local_port()
+        remote_hub_port = int(payload.get("remoteHubPort", 43140))
+        hub_host = str(payload.get("hubHost", "127.0.0.1"))
+        hub_port = int(payload.get("hubPort", 3140))
         location = str(payload.get("location", "."))
         remote_command = str(payload.get("remoteCommand", default_remote_client_command()))
         try:
@@ -92,18 +98,24 @@ class EphemeralBootstrapManager:
             ssh_command = ssh_base_command(payload)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        tunnel = f"127.0.0.1:{local_port}:127.0.0.1:{remote_port}"
-        command = f"cd {shlex.quote(location)} && exec {remote_command}"
+        log_root = str(payload.get("remoteLogDir", "~/.griplab/logs"))
+        log_stdout = f"{log_root}/{peer_id}.out"
+        log_stderr = f"{log_root}/{peer_id}.err"
+        command = remote_start_command(location, remote_command, log_root, log_stdout, log_stderr)
         process = subprocess.Popen(
-            [
-                *ssh_command,
-                "-o",
-                "ExitOnForwardFailure=yes",
-                "-L",
-                tunnel,
+            build_start_command(
+                ssh_command,
                 target.destination(),
+                ForwardPlan(
+                    peer_id=peer_id,
+                    local_peer_port=local_port,
+                    remote_hub_port=remote_hub_port,
+                    remote_client_port=remote_port,
+                    hub_host=hub_host,
+                    hub_port=hub_port,
+                ),
                 command,
-            ],
+            ),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -111,12 +123,16 @@ class EphemeralBootstrapManager:
             return {
                 "ok": False,
                 "error": f"ssh bootstrap exited {process.returncode}",
+                "health": process_health(False, f"ssh bootstrap exited {process.returncode}"),
             }
         self.processes[bootstrap_id] = BootstrapProcess(
             bootstrap_id=bootstrap_id,
             peer_id=peer_id,
             local_port=local_port,
             remote_port=remote_port,
+            remote_hub_port=remote_hub_port,
+            log_stdout=log_stdout,
+            log_stderr=log_stderr,
             process=process,
         )
         return {
@@ -126,6 +142,9 @@ class EphemeralBootstrapManager:
             "localUrl": f"http://127.0.0.1:{local_port}",
             "localPort": local_port,
             "remotePort": remote_port,
+            "remoteHubPort": remote_hub_port,
+            "logs": {"stdout": log_stdout, "stderr": log_stderr},
+            "health": process_health(True, "Remote process was started"),
             "mode": "ephemeral",
         }
 
@@ -365,6 +384,62 @@ def build_tunnel_command(payload: dict[str, Any], plan: ForwardPlan) -> list[str
         f"127.0.0.1:{plan.local_peer_port}:127.0.0.1:{plan.remote_client_port}",
         target.destination(),
     ]
+
+
+def build_start_command(
+    ssh_command: list[str],
+    destination: str,
+    plan: ForwardPlan,
+    remote_command: str,
+) -> list[str]:
+    return [
+        *ssh_command,
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-R",
+        f"127.0.0.1:{plan.remote_hub_port}:{plan.hub_host}:{plan.hub_port}",
+        "-L",
+        f"127.0.0.1:{plan.local_peer_port}:127.0.0.1:{plan.remote_client_port}",
+        destination,
+        remote_command,
+    ]
+
+
+def remote_start_command(
+    location: str,
+    remote_command: str,
+    log_root: str,
+    log_stdout: str,
+    log_stderr: str,
+) -> str:
+    return " && ".join([
+        f"mkdir -p {shlex.quote(log_root)}",
+        f"cd {shlex.quote(location)}",
+        f"exec {remote_command} > {shlex.quote(log_stdout)} 2> {shlex.quote(log_stderr)}",
+    ])
+
+
+def runtime_health(diagnostics: dict[str, object]) -> dict[str, object]:
+    checks = []
+    for name in ("python", "uv", "git", "node", "npm"):
+        value = diagnostics.get(name, {})
+        ok = bool(isinstance(value, dict) and value.get("ok"))
+        checks.append({
+            "id": name,
+            "status": "ok" if ok else "error",
+            "summary": f"{name} found" if ok else f"{name} missing; install {name} on the collaborator host",
+        })
+    return {
+        "status": "ok" if all(check["status"] == "ok" for check in checks) else "error",
+        "checks": checks,
+    }
+
+
+def process_health(ok: bool, summary: str) -> dict[str, object]:
+    return {
+        "status": "ok" if ok else "error",
+        "checks": [{"id": "process", "status": "ok" if ok else "error", "summary": summary}],
+    }
 
 
 def remote_probe_command(location: str) -> str:

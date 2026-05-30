@@ -9,11 +9,13 @@ from griplab_service.local_client import LocalClientServer
 from griplab_service.ssh_bootstrap import (
     ForwardPlan,
     allocate_local_port,
+    build_start_command,
     build_tunnel_command,
     classify_shell_fingerprint,
     diagnose_peer,
     prepare_remote_client,
     parse_ssh_target,
+    remote_start_command,
 )
 
 from fixtures.ssh_env import SshTestEnvError, SshTestEnvironment, find_ssh_tooling, shell_quote
@@ -55,6 +57,30 @@ def test_tunnel_command_has_local_and_remote_forwards() -> None:
     assert "-L" in command
     assert "127.0.0.1:42001:127.0.0.1:3141" in command
     assert command[-1] == "alice@example.invalid"
+
+
+def test_start_command_wraps_dual_forwards_and_logs() -> None:
+    plan = ForwardPlan(
+        peer_id="fixture",
+        local_peer_port=42001,
+        remote_hub_port=43140,
+        remote_client_port=3141,
+        hub_host="127.0.0.1",
+        hub_port=3140,
+    )
+    remote = remote_start_command(
+        "~/work/project",
+        "python3 -m http.server 3141 --bind 127.0.0.1",
+        "~/.griplab/logs",
+        "~/.griplab/logs/fixture.out",
+        "~/.griplab/logs/fixture.err",
+    )
+    command = build_start_command(["ssh"], "alice@example.invalid", plan, remote)
+
+    assert "127.0.0.1:43140:127.0.0.1:3140" in command
+    assert "127.0.0.1:42001:127.0.0.1:3141" in command
+    assert "fixture.out" in command[-1]
+    assert "fixture.err" in command[-1]
 
 
 def test_peer_probe_over_fixture_sshd(tmp_path) -> None:
@@ -167,6 +193,7 @@ def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:
                                 "identityFile": str(peer.identity_file),
                                 "knownHostsFile": str(peer.known_hosts_file),
                                 "remotePort": remote_port,
+                                "remoteLogDir": str(peer.workspace_root / ".remote-griplab" / "logs"),
                                 "remoteCommand": f"python3 -m http.server {remote_port} --bind 127.0.0.1",
                             },
                         })
@@ -175,8 +202,12 @@ def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:
                         payload = response["payload"]
                         assert payload["ok"] is True
                         assert payload["mode"] == "ephemeral"
+                        assert payload["remoteHubPort"] == 43140
+                        assert payload["health"]["status"] == "ok"
                         body = await fetch_bootstrap_url(payload["localUrl"])
                         assert "Directory listing" in body
+                        stderr = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.remote-griplab' / 'logs' / 'fixture.err')}")
+                        assert stderr.returncode == 0
 
                         await ws.send_json({
                             "messageId": "m000002",
