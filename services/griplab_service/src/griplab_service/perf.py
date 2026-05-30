@@ -38,7 +38,7 @@ def record(name: str, duration_ms: float, **fields: Any) -> dict[str, Any]:
     with _LOCK:
         _EVENTS.append(event)
     if enabled_for_stderr():
-        print(json.dumps({"event": "perf", **event}, sort_keys=True), file=sys.stderr, flush=True)
+        print(json.dumps({**event, "event": "perf"}, sort_keys=True), file=sys.stderr, flush=True)
     return event
 
 

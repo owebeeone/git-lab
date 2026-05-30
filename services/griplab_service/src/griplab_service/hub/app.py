@@ -1259,7 +1259,7 @@ class PeerRegistry:
                                     targetPeerId=stream.target_peer_id,
                                     targetMethod=stream.target_method,
                                     streamId=stream.caller_stream_id,
-                                    event=str(envelope.payload.get("event", "message")),
+                                    streamEvent=str(envelope.payload.get("event", "message")),
                                 )
                             event = StreamEvent(
                                 stream_id=stream.caller_stream_id,
@@ -1674,7 +1674,7 @@ class PeerRegistry:
                 targetPeerId=routed.target_peer_id,
                 targetMethod=routed.target_method,
                 streamId=routed.caller_stream_id,
-                event=str(envelope.payload.get("event", "message")),
+                streamEvent=str(envelope.payload.get("event", "message")),
             )
         event = StreamEvent(
             stream_id=routed.caller_stream_id,

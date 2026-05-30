@@ -64,6 +64,8 @@ BOOTSTRAPS_KEY = web.AppKey("bootstraps", Any)
 CHAT_KEY = web.AppKey("chat", Any)
 TREE_WATCH_KEY = web.AppKey("tree_watch", TreeWatchRegistry)
 FILE_WATCH_KEY = web.AppKey("file_watch", Any)
+WORKSPACE_STATUS_CACHE_KEY = web.AppKey("workspace_status_cache", Any)
+TREE_PAYLOAD_CACHE_KEY = web.AppKey("tree_payload_cache", Any)
 
 
 class LocalClientServer:
@@ -153,6 +155,8 @@ def create_app(config: ServiceConfig) -> web.Application:
     app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
     app[TREE_WATCH_KEY] = TreeWatchRegistry(config.workspace.root, asyncio.get_running_loop())
     app[FILE_WATCH_KEY] = FileWatchRegistry(asyncio.get_running_loop())
+    app[WORKSPACE_STATUS_CACHE_KEY] = PayloadCache()
+    app[TREE_PAYLOAD_CACHE_KEY] = PayloadCache()
     app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
@@ -199,6 +203,8 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         request.app[CHAT_KEY],
         request.app[TREE_WATCH_KEY],
         request.app[FILE_WATCH_KEY],
+        request.app[WORKSPACE_STATUS_CACHE_KEY],
+        request.app[TREE_PAYLOAD_CACHE_KEY],
         ws,
     )
 
@@ -557,6 +563,41 @@ class PeerStream:
     seq: int = 0
 
 
+class PayloadCache:
+    """Short-lived shared payload cache for fan-out streams."""
+
+    def __init__(self) -> None:
+        self.payload: dict[str, Any] | dict[str, object] | None = None
+        self.payload_hash: str | None = None
+        self.built_at_ms = 0.0
+        self.lock = asyncio.Lock()
+
+    async def get(
+        self,
+        *,
+        max_age_ms: float,
+        build: Any,
+        build_span: str,
+        hash_span: str,
+        fields: dict[str, Any],
+    ) -> tuple[dict[str, Any] | dict[str, object], str]:
+        async with self.lock:
+            now = perf.perf_counter_ms()
+            if self.payload is not None and self.payload_hash is not None and now - self.built_at_ms <= max_age_ms:
+                return self.payload, self.payload_hash
+            with perf.span(build_span, **fields):
+                payload = build()
+            with perf.span(hash_span, **fields):
+                payload_hash = stable_payload_hash(payload)
+            self.payload = payload
+            self.payload_hash = payload_hash
+            self.built_at_ms = perf.perf_counter_ms()
+            return payload, payload_hash
+
+    def invalidate(self) -> None:
+        self.built_at_ms = 0.0
+
+
 class LocalClientConnection:
     def __init__(
         self,
@@ -566,6 +607,8 @@ class LocalClientConnection:
         chat_store: ChatStore,
         tree_watches: TreeWatchRegistry,
         file_watches: "FileWatchRegistry",
+        workspace_status_cache: PayloadCache,
+        tree_payload_cache: PayloadCache,
         ws: web.WebSocketResponse,
     ) -> None:
         self.config = config
@@ -574,6 +617,8 @@ class LocalClientConnection:
         self.chat_store = chat_store
         self.tree_watches = tree_watches
         self.file_watches = file_watches
+        self.workspace_status_cache = workspace_status_cache
+        self.tree_payload_cache = tree_payload_cache
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
@@ -611,6 +656,7 @@ class LocalClientConnection:
 
     async def refresh_workspace_status(self, message_id: str) -> int:
         del message_id
+        self.workspace_status_cache.invalidate()
         count = 0
         for stream in list(self.workspace_status_streams.values()):
             await self._publish_workspace_status(stream, force=True)
@@ -631,6 +677,7 @@ class LocalClientConnection:
 
     async def refresh_tree(self, message_id: str) -> int:
         del message_id
+        self.tree_payload_cache.invalidate()
         count = 0
         for stream in list(self.tree_streams.values()):
             await self._publish_tree(stream, force=True)
@@ -847,7 +894,7 @@ class LocalClientConnection:
                 pass
 
     async def _poll_workspace_status(self, stream: WorkspaceStatusStream) -> None:
-        interval = self.config.workspace.status_poll_interval_ms / 1000
+        interval = effective_workspace_status_poll_interval(self.config.workspace.status_poll_interval_ms)
         try:
             while stream.stream_id in self.workspace_status_streams:
                 await asyncio.sleep(interval)
@@ -859,13 +906,11 @@ class LocalClientConnection:
         assert stream.queue is not None
         try:
             while stream.stream_id in self.tree_streams:
-                try:
-                    await asyncio.wait_for(stream.queue.get(), timeout=2.0)
-                except asyncio.TimeoutError:
-                    pass
+                await stream.queue.get()
                 await asyncio.sleep(0.05)
                 while not stream.queue.empty():
                     stream.queue.get_nowait()
+                self.tree_payload_cache.invalidate()
                 await self._publish_tree(stream, force=False)
         except asyncio.CancelledError:
             raise
@@ -1006,10 +1051,13 @@ class LocalClientConnection:
         await self._send_file_event(stream, "error", {"code": code, "message": message})
 
     async def _publish_workspace_status(self, stream: WorkspaceStatusStream, *, force: bool) -> bool:
-        with perf.span("local.workspace.status.build", peerId=self.config.self_peer_id, streamId=stream.stream_id):
-            payload = workspace_status_payload(self.config)
-        with perf.span("local.workspace.status.hash", peerId=self.config.self_peer_id, streamId=stream.stream_id):
-            payload_hash = stable_payload_hash(payload)
+        payload, payload_hash = await self.workspace_status_cache.get(
+            max_age_ms=500,
+            build=lambda: workspace_status_payload(self.config),
+            build_span="local.workspace.status.build",
+            hash_span="local.workspace.status.hash",
+            fields={"peerId": self.config.self_peer_id, "streamId": stream.stream_id},
+        )
         if not force and payload_hash == stream.last_hash:
             return False
         stream.last_hash = payload_hash
@@ -1029,10 +1077,13 @@ class LocalClientConnection:
         return True
 
     async def _publish_tree(self, stream: TreeStream, *, force: bool) -> bool:
-        with perf.span("local.tree.build", peerId=self.config.self_peer_id, streamId=stream.stream_id):
-            payload = tree_payload(self.config)
-        with perf.span("local.tree.hash", peerId=self.config.self_peer_id, streamId=stream.stream_id):
-            payload_hash = stable_payload_hash(payload)
+        payload, payload_hash = await self.tree_payload_cache.get(
+            max_age_ms=1000,
+            build=lambda: tree_payload(self.config),
+            build_span="local.tree.build",
+            hash_span="local.tree.hash",
+            fields={"peerId": self.config.self_peer_id, "streamId": stream.stream_id},
+        )
         if not force and payload_hash == stream.last_hash:
             return False
         stream.last_hash = payload_hash
@@ -1056,6 +1107,13 @@ def workspace_status_payload(config: ServiceConfig) -> dict[str, Any]:
     return {
         "repos": [repo_status_to_json(repo) for repo in collect_workspace_status(config.workspace.root)],
     }
+
+
+def effective_workspace_status_poll_interval(configured_ms: int) -> float:
+    configured = configured_ms / 1000
+    if configured_ms >= 1000:
+        return max(configured, 5.0)
+    return configured
 
 
 def tree_payload(config: ServiceConfig) -> dict[str, object]:
