@@ -91,6 +91,15 @@ export class ServiceClient {
     return result;
   }
 
+  async routeRequest(
+    targetPeerId: string,
+    method: string,
+    payload: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): Promise<ServiceEnvelope> {
+    return this.request('hub.route.request', { targetPeerId, method, payload }, signal);
+  }
+
   async getJson<T>(path: string, signal?: AbortSignal): Promise<T> {
     const response = await fetch(new URL(path, this.httpUrl), { signal });
     if (!response.ok) {
@@ -114,6 +123,15 @@ export class ServiceClient {
     } finally {
       this.streams.delete(streamId);
     }
+  }
+
+  routeSubscribe(
+    targetPeerId: string,
+    method: string,
+    payload: Record<string, unknown> = {},
+    signal?: AbortSignal,
+  ): AsyncIterable<ServiceStreamEvent> {
+    return this.subscribe('hub.route.subscribe', { targetPeerId, method, payload }, signal);
   }
 
   async *watchStatus(signal?: AbortSignal): AsyncIterable<ServiceConnectionState> {

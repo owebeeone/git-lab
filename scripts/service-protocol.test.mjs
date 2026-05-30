@@ -178,6 +178,49 @@ assert.deepEqual(chatStreamEvent.value.payload, {
   messages: [{ id: '1-me-000001', senderId: 'me', ts: 1, text: 'hi', links: [] }],
 });
 
+const routedRequestPromise = client.routeRequest('alice', 'deps.get', { workspace: 'main' });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 6);
+assert.equal(transport.sent[5].method, 'hub.route.request');
+assert.deepEqual(transport.sent[5].payload, {
+  targetPeerId: 'alice',
+  method: 'deps.get',
+  payload: { workspace: 'main' },
+});
+transport.push({
+  messageId: transport.sent[5].messageId,
+  kind: 'response',
+  method: 'hub.route.request',
+  payload: { repos: ['remote'], edges: [] },
+});
+assert.deepEqual((await routedRequestPromise).payload, { repos: ['remote'], edges: [] });
+
+const routedIterator = client.routeSubscribe('alice', 'workspace.status.subscribe')[Symbol.asyncIterator]();
+const nextRoutedEvent = routedIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 7);
+assert.equal(transport.sent[6].method, 'hub.route.subscribe');
+assert.equal(transport.sent[6].streamId, 's000005');
+assert.deepEqual(transport.sent[6].payload, {
+  targetPeerId: 'alice',
+  method: 'workspace.status.subscribe',
+  payload: {},
+});
+transport.push({
+  messageId: transport.sent[6].messageId,
+  kind: 'stream-event',
+  method: 'hub.route.subscribe',
+  streamId: 's000005',
+  payload: {
+    streamId: 's000005',
+    seq: 1,
+    event: 'snapshot',
+    payload: { repos: [{ path: '', name: 'remote' }] },
+  },
+});
+const routedEvent = await nextRoutedEvent;
+assert.deepEqual(routedEvent.value.payload, { repos: [{ path: '', name: 'remote' }] });
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');
