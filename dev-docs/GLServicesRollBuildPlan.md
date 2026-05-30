@@ -550,7 +550,8 @@ Deliverables:
 - route validation and errors for unknown/offline peers and target failures
 - cross-peer workspace status
 - cross-peer file window streams
-- client-derived diff from two file streams
+- hub synthetic structured diff stream
+- browser diff view backed by `diff.subscribe`
 - remote `cmd.run` through destination permission seam
 - remote session output subscription
 
@@ -559,7 +560,8 @@ Verification:
 - client A can route a request and a subscription to client B through the hub
 - two peers with same repo identity show status differences
 - file viewer can switch peers
-- diff view compares two peers/refs
+- hub publishes a routed synthetic diff for two peers/refs
+- diff view renders the synthetic diff stream
 - remote command stores logs on executor
 - hub reconnect reconciles running command state
 

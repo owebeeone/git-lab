@@ -702,43 +702,79 @@ Exit:
 
 - file viewer can inspect a non-local peer through the hub.
 
-## Combined Step 10D: Service Diff View
+## Combined Step 10D: Hub Synthetic Diff Stream
 
 Backend scope:
 
-- No new backend protocol unless 10C exposes a gap.
+- Implement the hub-owned synthetic diff stream from
+  `dev-docs/GLDiffStreamDesign.md`.
 
 Frontend scope:
 
-- Diff view service integration.
+- Protocol types and tap test fixtures only. Full `DiffViewerView` replacement
+  is Step 10E.
 
 Deliverables:
 
-- service-backed `DiffViewerView` data path.
-- client-derived diff from two independent `file.subscribe` streams.
-- diff left/right sides use independent keyed contexts so file stream windows,
-  peer/ref selections, decode status, and stream errors are isolated.
-- `DiffViewerView` no longer imports static file content for service mode.
+- `diff.subscribe`.
+- `diff.window.update`.
+- `diff.unsubscribe`.
+- optional one-shot `diff.get` returning the same structured payload shape.
+- `DiffConnection` owns left/right routed file subscriptions.
+- structured hunk payload `application/vnd.griplab.diff+json;version=1`.
+- diagnostics for missing file, binary file, decode failure, truncation,
+  peer-offline, and unsupported ref.
+- recompute policy: serialize source updates and publish full synthetic
+  snapshots/resets in v1.
 
 Rules:
 
-- Diff view uses two independent file streams and the existing line diff logic
-  only after both byte streams are hash-valid and decoded.
-- Diff endpoint request keys include peer/ref/file identity and destination
-  context where needed.
+- The browser does not open two source file streams directly in service mode.
+- The hub may share and reference-count identical `DiffConnection` instances.
+- Hunk line numbers are absolute one-based source-file display lines.
 
 Verification:
 
-- diff view compares two peers/refs.
-- left/right stream errors are isolated.
+- same/add/delete/replace hunk conversion tests.
+- two local service peers through the hub produce a routed synthetic diff.
+- editing either source file updates the synthetic diff stream.
+- peer disconnect produces a structured diagnostic or stream error.
+
+Exit:
+
+- hub can publish canonical live structured diffs.
+
+## Combined Step 10E: Browser Diff Integration
+
+Backend scope:
+
+- No new backend protocol unless Step 10D exposes a renderer-facing gap.
+
+Frontend scope:
+
+- Service diff view integration.
+
+Deliverables:
+
+- service `diffContentTap.ts` using `createAsyncStreamMultiTap`.
+- grips for diff hunks, diagnostics, stream status, and version.
+- `DiffViewerView` renders structured hunks from `diff.subscribe`.
+- diff view uses a keyed context such as `diff:main`.
+- existing state links still restore selected file, endpoints, and focus line.
+- `DiffViewerView` no longer imports static file content for service mode.
+
+Verification:
+
+- diff view compares two peers/refs from a synthetic diff stream.
+- diagnostics render without crashing the diff view.
 - source scan confirms service-mode diff path no longer depends on static file
   content.
 
 Exit:
 
-- service-mode diff works from routed file streams.
+- service-mode diff works from the hub synthetic diff stream.
 
-## Combined Step 10E: Remote Commands And Sessions
+## Combined Step 10F: Remote Commands And Sessions
 
 Backend scope:
 

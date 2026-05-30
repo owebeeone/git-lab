@@ -236,7 +236,9 @@ deltas; WS decides when a lagging browser subscriber gets `reset`.
 
 | Method | Shape | Purpose |
 | --- | --- | --- |
-| `diff.get` | req | Server-side one-shot diff (large/binary/historical) |
+| `diff.subscribe` / `diff.unsubscribe` | sub | Hub-owned synthetic live structured diff stream |
+| `diff.window.update` | req | Grow/shrink/move the source line window for an open diff stream |
+| `diff.get` | req | One-shot diff/export/historical comparison; same payload shape as live diff |
 
 **Commands, sessions, terminals**
 
@@ -580,9 +582,12 @@ Protocol models: pydantic Python + TypeScript interfaces, tested together.
 - Tree explorer: `tree.subscribe`
 - Workspace: `workspace.status.subscribe`
 - Chat: `chat.subscribe`
+- Diff view: `diff.subscribe` synthetic structured diff stream; see
+  `dev-docs/GLDiffStreamDesign.md`
 
-**Diff view:** client-derived live diff from two `file.subscribe` text-window
-streams (union window covering both sides) or `diff.get` for large/binary.
+The hub, not the browser, owns live diff source subscriptions in service mode.
+The browser renders structured hunks and sends `diff.window.update` for scroll
+or window changes.
 
 ## 16. Cross-platform notes
 
