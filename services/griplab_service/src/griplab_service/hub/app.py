@@ -33,6 +33,7 @@ from filedelta import (
     text_window_snapshot_from_json,
 )
 
+from griplab_service import perf
 from griplab_service.chat_store import ChatStore, chat_store_root
 from griplab_service.collaborators import (
     CollaboratorRecord,
@@ -296,6 +297,22 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
         ))
         schedule_process_restart()
         return
+    if envelope.method == "debug.perf.get":
+        limit = int(envelope.payload.get("limit", 100))
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=perf.payload(limit),
+        ))
+        return
+    if envelope.method == "debug.perf.clear":
+        perf.clear()
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"cleared": True},
+        ))
+        return
     if envelope.method == "chat.subscribe":
         if not envelope.stream_id:
             await connection.send(ProtocolEnvelope.error_response(
@@ -389,6 +406,9 @@ class RoutedRequest:
     caller_message_id: str
     caller_method: str
     target: "HubConnection"
+    target_peer_id: str
+    target_method: str
+    started_ms: float
     timeout_task: asyncio.Task[None] | None = None
 
 
@@ -400,6 +420,10 @@ class RoutedStream:
     caller_method: str
     target: "HubConnection"
     target_stream_id: str
+    target_peer_id: str
+    target_method: str
+    started_ms: float
+    first_event_seen: bool = False
 
 
 @dataclass
@@ -409,6 +433,10 @@ class TunnelRoutedStream:
     caller_stream_id: str
     caller_method: str
     target_stream_id: str
+    target_peer_id: str
+    target_method: str
+    started_ms: float
+    first_event_seen: bool = False
     task: asyncio.Task[None] | None = None
 
 
@@ -1009,6 +1037,9 @@ class PeerRegistry:
             caller_message_id=envelope.message_id,
             caller_method=envelope.method or "hub.route.request",
             target=target_connection,
+            target_peer_id=target_connection.peer_id or "",
+            target_method=method,
+            started_ms=perf.perf_counter_ms(),
         )
         routed.timeout_task = asyncio.create_task(self._expire_routed_request(target_message_id))
         self.routed_requests[target_message_id] = routed
@@ -1027,6 +1058,7 @@ class PeerRegistry:
         payload: dict[str, Any],
     ) -> None:
         message_id = self._next_relay_message_id()
+        started = perf.perf_counter_ms()
         try:
             async with ClientSession() as session:
                 async with session.ws_connect(tunnel.ws_url) as ws:
@@ -1037,12 +1069,27 @@ class PeerRegistry:
                     )))
                     response = await ws.receive_json(timeout=self.route_request_timeout_seconds)
         except Exception as exc:
+            perf.record(
+                "hub.route.request.tunnel",
+                perf.perf_counter_ms() - started,
+                ok=False,
+                targetPeerId=tunnel.peer_id,
+                targetMethod=method,
+                error=str(exc),
+            )
             await caller.send(ProtocolEnvelope.error_response(
                 message_id=envelope.message_id,
                 method=envelope.method,
                 error=ErrorInfo("peer-tunnel-error", str(exc)),
             ))
             return
+        perf.record(
+            "hub.route.request.tunnel",
+            perf.perf_counter_ms() - started,
+            ok=True,
+            targetPeerId=tunnel.peer_id,
+            targetMethod=method,
+        )
         try:
             routed = envelope_from_json(response)
         except Exception as exc:
@@ -1139,6 +1186,9 @@ class PeerRegistry:
             caller_method=envelope.method or "hub.route.subscribe",
             target=target_connection,
             target_stream_id=target_stream_id,
+            target_peer_id=target_connection.peer_id or "",
+            target_method=method,
+            started_ms=perf.perf_counter_ms(),
         )
         self.routed_streams_by_target[target_stream_id] = stream
         self.routed_streams_by_caller[envelope.stream_id] = stream
@@ -1167,6 +1217,9 @@ class PeerRegistry:
             caller_stream_id=envelope.stream_id,
             caller_method=envelope.method or "hub.route.subscribe",
             target_stream_id=target_stream_id,
+            target_peer_id=tunnel.peer_id,
+            target_method=method,
+            started_ms=perf.perf_counter_ms(),
         )
         previous = self.tunnel_streams_by_caller.pop(envelope.stream_id, None)
         if previous is not None and previous.task is not None:
@@ -1197,6 +1250,17 @@ class PeerRegistry:
                             continue
                         envelope = envelope_from_json(json.loads(msg.data))
                         if envelope.kind == "stream-event" and envelope.stream_id == stream.target_stream_id:
+                            if not stream.first_event_seen:
+                                stream.first_event_seen = True
+                                perf.record(
+                                    "hub.route.stream.tunnel.first_event",
+                                    perf.perf_counter_ms() - stream.started_ms,
+                                    ok=True,
+                                    targetPeerId=stream.target_peer_id,
+                                    targetMethod=stream.target_method,
+                                    streamId=stream.caller_stream_id,
+                                    event=str(envelope.payload.get("event", "message")),
+                                )
                             event = StreamEvent(
                                 stream_id=stream.caller_stream_id,
                                 seq=int(envelope.payload.get("seq", 0)),
@@ -1219,6 +1283,15 @@ class PeerRegistry:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            perf.record(
+                "hub.route.stream.tunnel",
+                perf.perf_counter_ms() - stream.started_ms,
+                ok=False,
+                targetPeerId=stream.target_peer_id,
+                targetMethod=stream.target_method,
+                streamId=stream.caller_stream_id,
+                error=str(exc),
+            )
             await self._send_tunnel_stream_error(stream, "peer-tunnel-error", str(exc))
         finally:
             if self.tunnel_streams_by_caller.get(stream.caller_stream_id) is stream:
@@ -1564,6 +1637,13 @@ class PeerRegistry:
             return
         if routed.timeout_task is not None:
             routed.timeout_task.cancel()
+        perf.record(
+            "hub.route.request.direct",
+            perf.perf_counter_ms() - routed.started_ms,
+            ok=envelope.kind != "error",
+            targetPeerId=routed.target_peer_id,
+            targetMethod=routed.target_method,
+        )
         if envelope.kind == "error":
             await routed.caller.send(ProtocolEnvelope.error_response(
                 message_id=routed.caller_message_id,
@@ -1585,6 +1665,17 @@ class PeerRegistry:
         routed = self.routed_streams_by_target.get(envelope.stream_id)
         if routed is None or routed.target is not target:
             return
+        if not routed.first_event_seen:
+            routed.first_event_seen = True
+            perf.record(
+                "hub.route.stream.direct.first_event",
+                perf.perf_counter_ms() - routed.started_ms,
+                ok=True,
+                targetPeerId=routed.target_peer_id,
+                targetMethod=routed.target_method,
+                streamId=routed.caller_stream_id,
+                event=str(envelope.payload.get("event", "message")),
+            )
         event = StreamEvent(
             stream_id=routed.caller_stream_id,
             seq=int(envelope.payload.get("seq", 0)),
@@ -1642,6 +1733,14 @@ class PeerRegistry:
             self.routed_requests.pop(target_message_id, None)
             if routed.timeout_task is not None:
                 routed.timeout_task.cancel()
+            perf.record(
+                "hub.route.request.direct",
+                perf.perf_counter_ms() - routed.started_ms,
+                ok=False,
+                targetPeerId=routed.target_peer_id,
+                targetMethod=routed.target_method,
+                error=message,
+            )
             await routed.caller.send(ProtocolEnvelope.error_response(
                 message_id=routed.caller_message_id,
                 method=routed.caller_method,
@@ -1704,6 +1803,14 @@ class PeerRegistry:
         routed = self.routed_requests.pop(target_message_id, None)
         if routed is None:
             return
+        perf.record(
+            "hub.route.request.direct",
+            perf.perf_counter_ms() - routed.started_ms,
+            ok=False,
+            targetPeerId=routed.target_peer_id,
+            targetMethod=routed.target_method,
+            error="target-timeout",
+        )
         await routed.caller.send(ProtocolEnvelope.error_response(
             message_id=routed.caller_message_id,
             method=routed.caller_method,

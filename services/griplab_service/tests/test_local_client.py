@@ -478,6 +478,52 @@ def test_file_stream_sends_snapshot_and_delta_on_local_edit(tmp_path: Path) -> N
     asyncio.run(run())
 
 
+def test_debug_perf_reports_file_timings(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "debug.perf.clear",
+                        "payload": {},
+                    })
+                    assert (await ws.receive_json(timeout=2))["payload"] == {"cleared": True}
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "file.subscribe",
+                        "streamId": "file0001",
+                        "payload": {
+                            "repoPath": "",
+                            "path": "README.md",
+                            "ref": "working",
+                            "window": {"lineStart": 0, "lineEnd": 10},
+                        },
+                    })
+                    assert (await ws.receive_json(timeout=2))["payload"]["event"] == "snapshot"
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "debug.perf.get",
+                        "payload": {"limit": 20},
+                    })
+                    response = await ws.receive_json(timeout=2)
+                    names = [event["name"] for event in response["payload"]["events"]]
+                    assert "local.file.subscribe_window" in names
+                    assert "local.file.subscribe.total" in names
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_file_window_update_routes_to_subscription(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))

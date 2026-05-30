@@ -45,6 +45,7 @@ from griplab_service.config import ServiceConfig
 from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
 from griplab_service.local_client.tree import TreeWatchRegistry, tree_snapshot_payload
 from griplab_service.local_client.workspace import ChangedFile, RepoStatus, collect_workspace_status
+from griplab_service import perf
 from griplab_service.probe import build_probe
 from griplab_service.protocol import (
     ErrorInfo,
@@ -232,10 +233,28 @@ async def handle_protocol_message(
         ))
         return
     if envelope.method == "deps.get":
+        started = perf.perf_counter_ms()
         await connection.send(ProtocolEnvelope.response(
             message_id=envelope.message_id,
             method=envelope.method,
             payload=deps_payload(connection.config),
+        ))
+        perf.record("local.request.deps.get", perf.perf_counter_ms() - started, peerId=connection.config.self_peer_id)
+        return
+    if envelope.method == "debug.perf.get":
+        limit = int(envelope.payload.get("limit", 100))
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=perf.payload(limit),
+        ))
+        return
+    if envelope.method == "debug.perf.clear":
+        perf.clear()
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"cleared": True},
         ))
         return
     if envelope.method == "admin.restart":
@@ -626,6 +645,7 @@ class LocalClientConnection:
         return True
 
     async def subscribe_file(self, message_id: str, stream_id: str, payload: dict[str, Any]) -> None:
+        total_started = perf.perf_counter_ms()
         existing = self.file_streams.get(stream_id)
         if existing is not None:
             await self._close_file_stream(existing, "replaced")
@@ -633,8 +653,20 @@ class LocalClientConnection:
 
         stream = FileStream(message_id=message_id, stream_id=stream_id)
         self.file_streams[stream_id] = stream
+        repo_path = str(payload.get("repoPath", ""))
+        path = str(payload.get("path", ""))
+        ref = str(payload.get("ref", "working"))
+        window = None
         try:
-            source = resolve_file_source(self.config.workspace.root, payload)
+            with perf.span(
+                "local.file.resolve",
+                peerId=self.config.self_peer_id,
+                streamId=stream_id,
+                repoPath=repo_path,
+                path=path,
+                ref=ref,
+            ):
+                source = resolve_file_source(self.config.workspace.root, payload)
             stream.temp_path = source.get("temp_path") if isinstance(source.get("temp_path"), Path) else None
             window = parse_line_window(payload)
             queue: asyncio.Queue[None] = asyncio.Queue()
@@ -642,24 +674,85 @@ class LocalClientConnection:
             subscriber = ServiceFileSubscriber(self, stream)
             connection = FileConnection(str(source["resource_id"]), source["path"])
             stream.connection = connection
-            await connection.open()
-            stream.subscription = await connection.subscribe_window(subscriber, window)
+            source_path = Path(source["path"])
+            file_size = source_path.stat().st_size if source_path.exists() else None
+            with perf.span(
+                "local.file.open",
+                peerId=self.config.self_peer_id,
+                streamId=stream_id,
+                repoPath=repo_path,
+                path=path,
+                ref=ref,
+                fileSize=file_size,
+            ):
+                await connection.open()
+            with perf.span(
+                "local.file.subscribe_window",
+                peerId=self.config.self_peer_id,
+                streamId=stream_id,
+                repoPath=repo_path,
+                path=path,
+                ref=ref,
+                fileSize=file_size,
+                lineStart=window.line_start,
+                lineEnd=window.line_end,
+            ):
+                stream.subscription = await connection.subscribe_window(subscriber, window)
             if source["ref"] == "working":
                 stream.watch_target = Path(source["path"])
-                self.file_watches.subscribe(stream.watch_target, queue)
+                with perf.span(
+                    "local.file.watch_subscribe",
+                    peerId=self.config.self_peer_id,
+                    streamId=stream_id,
+                    repoPath=repo_path,
+                    path=path,
+                    ref=ref,
+                ):
+                    self.file_watches.subscribe(stream.watch_target, queue)
                 stream.task = asyncio.create_task(self._watch_file(stream))
+            perf.record(
+                "local.file.subscribe.total",
+                perf.perf_counter_ms() - total_started,
+                ok=True,
+                peerId=self.config.self_peer_id,
+                streamId=stream_id,
+                repoPath=repo_path,
+                path=path,
+                ref=ref,
+                lineStart=window.line_start,
+                lineEnd=window.line_end,
+            )
         except Exception as exc:
             if stream.temp_path is not None:
                 stream.temp_path.unlink(missing_ok=True)
                 stream.temp_path = None
             code = "unsupported-ref" if str(exc).startswith("unsupported ref:") else "file-open-failed"
             await self._send_file_error(stream, code, str(exc))
+            perf.record(
+                "local.file.subscribe.total",
+                perf.perf_counter_ms() - total_started,
+                ok=False,
+                peerId=self.config.self_peer_id,
+                streamId=stream_id,
+                repoPath=repo_path,
+                path=path,
+                ref=ref,
+                error=str(exc),
+            )
 
     async def update_file_window(self, stream_id: str, payload: dict[str, Any]) -> bool:
         stream = self.file_streams.get(stream_id)
         if stream is None or stream.subscription is None:
             return False
-        await stream.subscription.update_window(parse_line_window(payload))
+        window = parse_line_window(payload)
+        with perf.span(
+            "local.file.window_update",
+            peerId=self.config.self_peer_id,
+            streamId=stream_id,
+            lineStart=window.line_start,
+            lineEnd=window.line_end,
+        ):
+            await stream.subscription.update_window(window)
         return True
 
     async def unsubscribe_file(self, stream_id: str) -> bool:
@@ -796,7 +889,8 @@ class LocalClientConnection:
                 await asyncio.sleep(0.05)
                 while not stream.queue.empty():
                     stream.queue.get_nowait()
-                await stream.connection.file_changed()
+                with perf.span("local.file.changed", peerId=self.config.self_peer_id, streamId=stream.stream_id):
+                    await stream.connection.file_changed()
         except asyncio.CancelledError:
             raise
 
@@ -912,8 +1006,10 @@ class LocalClientConnection:
         await self._send_file_event(stream, "error", {"code": code, "message": message})
 
     async def _publish_workspace_status(self, stream: WorkspaceStatusStream, *, force: bool) -> bool:
-        payload = workspace_status_payload(self.config)
-        payload_hash = stable_payload_hash(payload)
+        with perf.span("local.workspace.status.build", peerId=self.config.self_peer_id, streamId=stream.stream_id):
+            payload = workspace_status_payload(self.config)
+        with perf.span("local.workspace.status.hash", peerId=self.config.self_peer_id, streamId=stream.stream_id):
+            payload_hash = stable_payload_hash(payload)
         if not force and payload_hash == stream.last_hash:
             return False
         stream.last_hash = payload_hash
@@ -933,8 +1029,10 @@ class LocalClientConnection:
         return True
 
     async def _publish_tree(self, stream: TreeStream, *, force: bool) -> bool:
-        payload = tree_payload(self.config)
-        payload_hash = stable_payload_hash(payload)
+        with perf.span("local.tree.build", peerId=self.config.self_peer_id, streamId=stream.stream_id):
+            payload = tree_payload(self.config)
+        with perf.span("local.tree.hash", peerId=self.config.self_peer_id, streamId=stream.stream_id):
+            payload_hash = stable_payload_hash(payload)
         if not force and payload_hash == stream.last_hash:
             return False
         stream.last_hash = payload_hash

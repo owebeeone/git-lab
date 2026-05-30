@@ -194,6 +194,37 @@ pytest's import-name collision behavior.
 - Hub health: `http://127.0.0.1:3140/health`
 - Vite dev server: printed by `npm run dev`
 
+## Performance Diagnostics
+
+The hub and local client keep a small in-memory timing buffer for service-side
+operations such as routed subscriptions, tree snapshots, workspace status, and
+file window snapshots.
+
+Fetch hub timings:
+
+```bash
+uv run --with aiohttp python scripts/griplab_perf.py --url ws://127.0.0.1:3140/ws
+```
+
+Fetch timings from a routed collaborator through the hub:
+
+```bash
+uv run --with aiohttp python scripts/griplab_perf.py --url ws://127.0.0.1:3140/ws --target weftpi
+```
+
+Fetch local client timings directly:
+
+```bash
+uv run --with aiohttp python scripts/griplab_perf.py --url ws://127.0.0.1:3141/ws
+```
+
+To also emit timing events as JSON lines on service stderr, start the service
+with:
+
+```bash
+GRIPLAB_TRACE=1 python scripts/start_griplab.py --with-hub
+```
+
 ## Troubleshooting
 
 - If the service fails to import `filedelta`, `diffstream`, or
