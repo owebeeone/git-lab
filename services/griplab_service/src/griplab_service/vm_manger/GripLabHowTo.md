@@ -236,6 +236,18 @@ Native-host mode imposes no extra isolation beyond how the host is already confi
 
 QEMU on Raspberry Pi is an advanced path. Use native-host first, then install QEMU when you want local ARM VM experiments.
 
+Set up QEMU VM support on the Raspberry Pi:
+
+```bash
+griplab-vm setup rpi --execute
+```
+
+The explicit tool form is:
+
+```bash
+griplab-vm install-tool qemu --execute
+```
+
 Dry-run install:
 
 ```bash
@@ -256,6 +268,12 @@ command -v qemu-system-aarch64
 ```
 
 Also confirm that the host exposes the KVM acceleration device if you expect hardware-accelerated local VMs. The QEMU provider lifecycle is not complete yet. The setup command prepares the host for the future QEMU phase.
+
+The future QEMU VM lifecycle command is expected to look like this, but it is not implemented yet:
+
+```bash
+griplab-vm --state-file "$STATE" create --provider qemu --profile pi-qemu --name rpi-qemu-dev
+```
 
 ## Windows/WSL
 
