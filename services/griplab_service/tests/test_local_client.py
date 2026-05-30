@@ -1,6 +1,9 @@
 import json
+import asyncio
 from pathlib import Path
 from urllib.request import urlopen
+
+from aiohttp import ClientSession
 
 from griplab_service.cli import main
 from griplab_service.config import load_config
@@ -65,6 +68,52 @@ def test_local_client_health_and_probe(tmp_path: Path) -> None:
     assert "watchdog" in probe["capabilities"]
     assert status["repos"][0]["name"] == "repo"
     assert deps == {"repos": [""], "edges": [], "errors": {}}
+
+
+def test_local_client_websocket_protocol(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "workspace.status.subscribe",
+                        "streamId": "s000001",
+                        "payload": {},
+                    })
+                    workspace_msg = await ws.receive_json(timeout=2)
+                    assert workspace_msg["kind"] == "stream-event"
+                    assert workspace_msg["streamId"] == "s000001"
+                    assert workspace_msg["payload"]["event"] == "snapshot"
+                    assert workspace_msg["payload"]["payload"]["repos"][0]["name"] == "repo"
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "deps.get",
+                        "payload": {},
+                    })
+                    deps_msg = await ws.receive_json(timeout=2)
+                    assert deps_msg["kind"] == "response"
+                    assert deps_msg["payload"] == {"repos": [""], "edges": [], "errors": {}}
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "missing.method",
+                        "payload": {},
+                    })
+                    error_msg = await ws.receive_json(timeout=2)
+                    assert error_msg["kind"] == "error"
+                    assert error_msg["error"]["code"] == "unknown-method"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
 
 
 def test_probe_cli_prints_probe_payload(tmp_path: Path, capsys) -> None:

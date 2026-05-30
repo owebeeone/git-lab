@@ -69,6 +69,28 @@ transport.push({
 assert.deepEqual((await requestPromise).payload, { ok: true });
 assert.equal(client.httpUrl, 'http://test.local/');
 
+const streamIterator = client.subscribe('workspace.status.subscribe')[Symbol.asyncIterator]();
+const nextWorkspaceEvent = streamIterator.next();
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 2);
+assert.equal(transport.sent[1].method, 'workspace.status.subscribe');
+assert.equal(transport.sent[1].streamId, 's000001');
+transport.push({
+  messageId: transport.sent[1].messageId,
+  kind: 'stream-event',
+  method: 'workspace.status.subscribe',
+  streamId: 's000001',
+  payload: {
+    streamId: 's000001',
+    seq: 1,
+    event: 'snapshot',
+    payload: { repos: [{ path: '', name: 'repo' }] },
+  },
+});
+const workspaceStreamEvent = await nextWorkspaceEvent;
+assert.equal(workspaceStreamEvent.value.event, 'snapshot');
+assert.deepEqual(workspaceStreamEvent.value.payload, { repos: [{ path: '', name: 'repo' }] });
+
 const controller = new AbortController();
 const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
 assert.equal((await statusIterator.next()).value.status, 'connected');

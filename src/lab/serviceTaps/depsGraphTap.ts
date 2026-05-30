@@ -18,7 +18,8 @@ export function createServiceDepsGraphTap(client: ServiceClient = defaultService
     provides: [WORKSPACE_DEP_EDGES],
     requestKeyOf: () => 'deps.get',
     subscribe: async function* (_params, signal) {
-      yield await client.getJson<DepsGraphPayload>('/deps', signal);
+      const response = await client.request('deps.get', {}, signal);
+      yield response.payload as unknown as DepsGraphPayload;
     },
     mapEvent: (_params, event) => new Map([[WORKSPACE_DEP_EDGES, event.edges]]),
     initialState: [[WORKSPACE_DEP_EDGES, []]],
