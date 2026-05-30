@@ -122,6 +122,45 @@ def test_local_client_websocket_protocol(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_local_client_peer_presence_uses_config_peers(tmp_path: Path) -> None:
+    async def run() -> None:
+        config_path = write_config(tmp_path)
+        value = json.loads(config_path.read_text(encoding="utf-8"))
+        value["peers"] = [
+            {
+                "peerId": "weftpi",
+                "name": "Weftpi",
+                "sshAddress": "gianni@10.1.1.236",
+                "location": "~/gitlab/grip-dev",
+            }
+        ]
+        config_path.write_text(json.dumps(value), encoding="utf-8")
+        config = load_config(config_path)
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "peer.presence.subscribe",
+                        "streamId": "peers0001",
+                        "payload": {},
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    peers = snapshot["payload"]["payload"]["peers"]
+                    assert peers[0]["id"] == "me"
+                    assert peers[0]["isSelf"] is True
+                    assert peers[1]["id"] == "weftpi"
+                    assert peers[1]["sshAddress"] == "gianni@10.1.1.236"
+                    assert peers[1]["location"] == "~/gitlab/grip-dev"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_local_client_chat_post_and_subscribe(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path))

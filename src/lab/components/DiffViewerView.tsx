@@ -1,4 +1,4 @@
-import { useAtomValueTap, useGrip, useKeyedChildContext } from '@owebeeone/grip-react';
+import { createAtomValueTap, useGrip, useKeyedChildContext, type GripContext } from '@owebeeone/grip-react';
 import {
   PEERS,
   SELECTED_FILE, SELECTED_FILE_TAP,
@@ -13,6 +13,13 @@ import { DIFF_DIAGNOSTICS, DIFF_HUNKS, DIFF_STREAM_STATUS } from '../grips.servi
 import type { DiffEndpoint, FileRef, Peer } from '../types';
 import { dragProps, fileLink, diffLineLink } from '../dnd';
 import Avatar from './Avatar';
+
+const DEFAULT_DIFF_WINDOW = { lineStart: 0, lineEnd: 400 };
+
+function initDiffContext(ctx: GripContext, activeFile = '') {
+  ctx.registerTap(createAtomValueTap(ACTIVE_FILE, { initial: activeFile, handleGrip: ACTIVE_FILE_TAP }));
+  ctx.registerTap(createAtomValueTap(DIFF_WINDOW, { initial: DEFAULT_DIFF_WINDOW, handleGrip: DIFF_WINDOW_TAP }));
+}
 
 function splitKey(key: string): { repoPath: string; path: string } {
   const idx = key.indexOf('::');
@@ -58,13 +65,12 @@ export default function DiffViewerView() {
   const fileOptions = tree
     .filter((entry) => entry.kind === 'file')
     .map((entry) => ({ key: `${entry.repoPath}::${entry.path}`, repoPath: entry.repoPath, path: entry.path }));
-  const activeFile = selected ?? fileOptions[0]?.key ?? '';
+  const activeFile = selected ?? '';
   const file = splitKey(activeFile);
-  const ctx = useKeyedChildContext('diff:main');
-  useAtomValueTap(ACTIVE_FILE, { ctx: ctx as never, initial: activeFile, tapGrip: ACTIVE_FILE_TAP });
-  useAtomValueTap(DIFF_LEFT, { ctx: ctx as never, initial: left, tapGrip: DIFF_LEFT_TAP });
-  useAtomValueTap(DIFF_RIGHT, { ctx: ctx as never, initial: right, tapGrip: DIFF_RIGHT_TAP });
-  useAtomValueTap(DIFF_WINDOW, { ctx: ctx as never, initial: { lineStart: 0, lineEnd: 400 }, tapGrip: DIFF_WINDOW_TAP });
+  const ctx = useKeyedChildContext('diff:main', {
+    init: (child) => initDiffContext(child, activeFile),
+  });
+  const activeFileTap = useGrip(ACTIVE_FILE_TAP, ctx);
 
   const hunks = useGrip(DIFF_HUNKS, ctx) ?? [];
   const diagnostics = useGrip(DIFF_DIAGNOSTICS, ctx) ?? [];
@@ -83,8 +89,12 @@ export default function DiffViewerView() {
         <select
           className="file-select"
           value={activeFile}
-          onChange={(e) => selectTap?.set(e.target.value)}
+          onChange={(e) => {
+            activeFileTap?.set(e.target.value);
+            selectTap?.set(e.target.value);
+          }}
         >
+          <option value="" disabled>Select a file</option>
           {fileOptions.map((f) => <option key={f.key} value={f.key}>{f.repoPath}/{f.path}</option>)}
         </select>
         {/* Dragging a <select> is awkward, so this chip is the drag source. */}

@@ -13,7 +13,6 @@ import { createServiceSessionsTap } from './serviceTaps/sessionsTap';
 import { createServiceTreeTap } from './serviceTaps/treeTap';
 import { createServiceWorkspaceStatusTap } from './serviceTaps/workspaceStatusTap';
 import { createServiceStateTap } from './serviceStateTap';
-import { LAB_HUB_PRESENCE, LAB_HUB_ROUTE } from './dataMode';
 import { registerLabUiTaps } from './taps';
 
 function registerServicePlaceholderTaps() {
@@ -34,6 +33,6 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceSessionsTap());
   grok.registerTap(createServiceSessionOutputTap());
   grok.registerTap(createServiceChatMessagesTap());
-  if (LAB_HUB_PRESENCE || LAB_HUB_ROUTE) grok.registerTap(createServicePeersTap());
+  grok.registerTap(createServicePeersTap());
   registerServicePlaceholderTaps();
 }

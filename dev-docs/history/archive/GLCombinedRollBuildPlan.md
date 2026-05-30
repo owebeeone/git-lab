@@ -529,37 +529,73 @@ Exit:
 
 - browser can view local service through hub route.
 
-## Combined Step 8: SSH Bootstrap + Onboarding Probe
+## Combined Step 8: Hub-Owned Collaborator Bootstrap + Health
 
 Backend scope:
 
 - Services Phase 10: SSH bootstrap and forwarding.
+- `dev-docs/GLCollaboratorBootstrapPlan.md`.
 
 Frontend scope:
 
-- `probeTap.ts` and onboarding service integration.
+- collaborator presence and health diagnostics.
+- onboarding service integration remains a thin add-collaborator/config path;
+  the hub owns actual remote bootstrap.
 
 Deliverables:
 
-- `peer.probe`.
-- `peer.bootstrap`.
+- hub loads configured collaborators from the default config home.
+- automatic SSH bootstrap worker owned by the hub.
+- remote `~/.griplab` creation.
+- griplab client payload copied to the remote machine on every bootstrap.
+- remote `client.json` writer.
+- Python/uv runtime check and install/provision path when missing.
+- ephemeral remote client start/restart.
+- live client registration and heartbeat.
+- `peer.presence.subscribe` reports configured, offline, bootstrapping,
+  starting, online, and error states.
+- `peer.health.get` returns detailed diagnostics for one collaborator.
 - SSH target parsing.
-- ephemeral remote client start and local port forward path.
-- persistent remote install/update is out of scope for the first SSH slice.
+- persistent remote service install is out of scope for the first SSH slice.
 - service `probeTap.ts`.
 - `ONBOARDING_PROBE_RESULT` as the dedicated result grip. `ONBOARDING_FORM`
   remains user input state and is not overloaded with probe output.
+- Collaborators page health/status button opens a diagnostics dialog backed by
+  `peer.health.get`.
+
+Rules:
+
+- SSH reachability alone never marks a collaborator online. Online is based on a
+  live registered client connection and heartbeat.
+- Missing Python, missing uv, stale client payload, and missing remote config are
+  bootstrap work items, not final presence states.
+- Presence remains compact and stream-friendly. Detailed check output belongs in
+  `peer.health.get`.
+- The remote client is ephemeral by default. Do not add launchd/systemd/Windows
+  service installation in this step.
 
 Verification:
 
 - local SSH fixture where available.
+- hub bootstrap creates remote griplab area and config.
+- re-bootstrap copies/replaces the client payload cleanly.
+- missing runtime fixture exercises install/provision behavior where the harness
+  can model it.
+- remote client starts, registers, heartbeats, and becomes online.
+- killing the remote client changes presence away from online.
+- two collaborators on the same SSH address but different peer ids/workspaces
+  remain distinct.
+- `peer.health.get` exposes SSH, payload, config, runtime, process,
+  registration, and heartbeat diagnostics.
 - auth/update/version failure states.
 - stale probe result ignored when form changes.
 - onboarding mock behavior still works in mock mode.
 
 Exit:
 
-- collaborator can be checked and bootstrapped through service flow.
+- adding a collaborator is enough for the hub to attempt automatic bootstrap.
+- collaborators page can explain offline/error collaborators without requiring
+  server log inspection.
 
 ## Combined Step 9: Chat Store + Chat Tap
 

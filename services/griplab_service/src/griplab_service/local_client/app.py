@@ -249,6 +249,16 @@ async def handle_protocol_message(
             return
         await connection.subscribe_chat(envelope.message_id, envelope.stream_id)
         return
+    if envelope.method == "peer.presence.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "peer.presence.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_peers(envelope.message_id, envelope.stream_id)
+        return
     if envelope.method == "chat.post":
         try:
             message = connection.chat_store.post(
@@ -481,6 +491,13 @@ class ChatStream:
     task: asyncio.Task[None] | None = None
 
 
+@dataclass
+class PeerStream:
+    message_id: str
+    stream_id: str
+    seq: int = 0
+
+
 class LocalClientConnection:
     def __init__(
         self,
@@ -501,6 +518,7 @@ class LocalClientConnection:
         self.sessions_streams: dict[str, SessionsStream] = {}
         self.output_streams: dict[str, SessionOutputStream] = {}
         self.chat_streams: dict[str, ChatStream] = {}
+        self.peer_streams: dict[str, PeerStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -637,6 +655,11 @@ class LocalClientConnection:
         await self._publish_chat(stream)
         stream.task = asyncio.create_task(self._watch_chat(stream))
 
+    async def subscribe_peers(self, message_id: str, stream_id: str) -> None:
+        stream = PeerStream(message_id=message_id, stream_id=stream_id)
+        self.peer_streams[stream_id] = stream
+        await self._publish_peers(stream)
+
     async def close(self) -> None:
         status_tasks = [stream.task for stream in self.workspace_status_streams.values() if stream.task is not None]
         tree_streams = list(self.tree_streams.values())
@@ -650,6 +673,7 @@ class LocalClientConnection:
         self.sessions_streams.clear()
         self.output_streams.clear()
         self.chat_streams.clear()
+        self.peer_streams.clear()
         for stream in tree_streams:
             await self._close_tree_stream(stream)
         for stream in file_streams:
@@ -802,6 +826,20 @@ class LocalClientConnection:
             ),
         ))
 
+    async def _publish_peers(self, stream: PeerStream) -> None:
+        stream.seq += 1
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="peer.presence.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload={"peers": config_peers_payload(self.config)},
+            ),
+        ))
+
     async def _send_file_event(self, stream: FileStream, event: str, payload: dict[str, Any]) -> None:
         await self.send(ProtocolEnvelope.stream_event(
             message_id=stream.message_id,
@@ -877,6 +915,55 @@ def stable_payload_hash(payload: dict[str, Any] | dict[str, object]) -> str:
 
 def deps_payload(config: ServiceConfig) -> dict[str, Any]:
     return dependency_graph_to_json(get_dependency_graph(config.workspace.root))
+
+
+def config_peers_payload(config: ServiceConfig) -> list[dict[str, object]]:
+    peers = [self_peer_payload(config)]
+    peers.extend(peer_config_to_json(item) for item in config.peers)
+    return peers
+
+
+def self_peer_payload(config: ServiceConfig) -> dict[str, object]:
+    probe = build_probe(config)
+    capabilities = dict(probe.get("capabilities", {}))
+    workspace = dict(probe.get("workspace", {}))
+    shells = capabilities.get("shells", [])
+    return {
+        "id": config.self_peer_id,
+        "name": config.self_peer_id,
+        "sshAddress": "",
+        "location": str(workspace.get("root", config.workspace.root)),
+        "os": normalize_peer_os(str(capabilities.get("os", ""))),
+        "shells": [Path(str(shell)).name for shell in shells] if isinstance(shells, list) else [],
+        "online": True,
+        "isSelf": True,
+    }
+
+
+def peer_config_to_json(value: dict[str, Any]) -> dict[str, object]:
+    probe = value.get("probe") if isinstance(value.get("probe"), dict) else {}
+    shells = probe.get("shells", []) if isinstance(probe, dict) else []
+    return {
+        "id": str(value.get("peerId", value.get("id", ""))),
+        "name": str(value.get("name", value.get("peerId", ""))),
+        "sshAddress": str(value.get("sshAddress", "")),
+        "location": str(value.get("location", "")),
+        "os": normalize_peer_os(str(probe.get("os", ""))) if isinstance(probe, dict) and probe.get("os") else None,
+        "shells": [str(shell) for shell in shells] if isinstance(shells, list) else [],
+        "online": bool(probe.get("ok", False)) if isinstance(probe, dict) else False,
+        "isSelf": False,
+    }
+
+
+def normalize_peer_os(value: str) -> str | None:
+    value = value.lower()
+    if value.startswith("darwin") or value == "macos":
+        return "macos"
+    if value.startswith("linux"):
+        return "linux"
+    if value.startswith(("win", "mingw", "msys", "cygwin")) or value == "windows":
+        return "windows"
+    return None
 
 
 def changed_file_to_json(changed: ChangedFile) -> dict[str, object]:

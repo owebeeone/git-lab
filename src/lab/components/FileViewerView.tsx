@@ -1,4 +1,4 @@
-import { useGrip, useKeyedChildContext, useAtomValueTap } from '@owebeeone/grip-react';
+import { createAtomValueTap, useGrip, useKeyedChildContext, type GripContext } from '@owebeeone/grip-react';
 import {
   SELECTED_PEER_ID, PEERS, FOCUS_LINE,
   FILE_REF, FILE_REF_TAP, ACTIVE_FILE, ACTIVE_FILE_TAP, FILE_CONTENT, FILE_GIT_STATUS,
@@ -23,6 +23,14 @@ function newGroupId() {
   return `g-${Math.random().toString(36).slice(2, 7)}`;
 }
 
+const DEFAULT_FILE_WINDOW = { lineStart: 0, lineEnd: 400 };
+
+function initFileColumnContext(ctx: GripContext, activeFile = '') {
+  ctx.registerTap(createAtomValueTap(ACTIVE_FILE, { initial: activeFile, handleGrip: ACTIVE_FILE_TAP }));
+  ctx.registerTap(createAtomValueTap(FILE_REF, { initial: 'working' as FileRef, handleGrip: FILE_REF_TAP }));
+  ctx.registerTap(createAtomValueTap(FILE_WINDOW, { initial: DEFAULT_FILE_WINDOW, handleGrip: FILE_WINDOW_TAP }));
+}
+
 // One editor column. Each column owns its own working/head selection via a
 // per-instance child grip-context + atom tap (no shared global FILE_REF).
 function EditorColumn(props: {
@@ -42,14 +50,12 @@ function EditorColumn(props: {
   // Per-view child grip-context. We publish this column's destination params
   // (ACTIVE_FILE, FILE_REF) into it; the FileContentTap reads them and provides
   // FILE_CONTENT / FILE_GIT_STATUS for this specific destination context.
-  const ctx = useKeyedChildContext(`files:${group.id}`);
-  // ACTIVE_FILE tracks the column's active tab; changing it re-runs the content
-  // tap for this destination (initial is a memo dep, so it updates on change).
-  useAtomValueTap(ACTIVE_FILE, { ctx: ctx as never, initial: group.active ?? '', tapGrip: ACTIVE_FILE_TAP });
-  useAtomValueTap(FILE_REF, { ctx: ctx as never, initial: 'working', tapGrip: FILE_REF_TAP });
-  useAtomValueTap(FILE_WINDOW, { ctx: ctx as never, initial: { lineStart: 0, lineEnd: 400 }, tapGrip: FILE_WINDOW_TAP });
+  const ctx = useKeyedChildContext(`files:${group.id}`, {
+    init: (child) => initFileColumnContext(child, group.active ?? ''),
+  });
 
   const ref = useGrip(FILE_REF, ctx) ?? 'working';
+  const activeFileTap = useGrip(ACTIVE_FILE_TAP, ctx);
   const refTap = useGrip(FILE_REF_TAP, ctx);
   const code = useGrip(FILE_CONTENT, ctx) ?? '';
   const gitStatus = useGrip(FILE_GIT_STATUS, ctx) ?? 'clean';
@@ -72,12 +78,24 @@ function EditorColumn(props: {
               <button
                 className="otab-name"
                 {...dragProps(fileLink(sp.repoPath, sp.path, peer))}
-                onClick={() => props.onFocusTab(group.id, k)}
+                onClick={() => {
+                  activeFileTap?.set(k);
+                  props.onFocusTab(group.id, k);
+                }}
                 title={`${sp.repoPath}/${sp.path}`}
               >
                 {basename(sp.path)}
               </button>
-              <button className="otab-x" onClick={() => props.onCloseTab(group.id, k)} title="Close">×</button>
+              <button
+                className="otab-x"
+                onClick={() => {
+                  const open = group.open.filter((candidate) => candidate !== k);
+                  const active = group.active === k ? (open.length ? open[open.length - 1] : '') : (group.active ?? '');
+                  activeFileTap?.set(active);
+                  props.onCloseTab(group.id, k);
+                }}
+                title="Close"
+              >×</button>
             </div>
           );
         })}
@@ -125,6 +143,10 @@ export default function FileViewerView() {
   const focusLine = useGrip(FOCUS_LINE) ?? null;
 
   const focusedActive = groups.find((g) => g.id === activeGroup)?.active ?? null;
+  const activeColumnCtx = useKeyedChildContext(`files:${activeGroup}`, {
+    init: (child) => initFileColumnContext(child, focusedActive ?? ''),
+  });
+  const activeFileTap = useGrip(ACTIVE_FILE_TAP, activeColumnCtx);
 
   const focusTab = (gid: string, key: string) => {
     setGroups(groups.map((g) => (g.id === gid ? { ...g, active: key } : g)));
@@ -167,7 +189,14 @@ export default function FileViewerView() {
   return (
     <section className="view files-ide">
       <div className="ide-body">
-        <FileExplorer activeKey={focusedActive} onOpen={openInFiles} peer={peer} />
+        <FileExplorer
+          activeKey={focusedActive}
+          onOpen={(key) => {
+            activeFileTap?.set(key);
+            openInFiles(key);
+          }}
+          peer={peer}
+        />
         <div className="editor-stack">
           <div className="files-toolbar"><PeerSelect /></div>
           <div className="editor-groups">
