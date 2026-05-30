@@ -8,6 +8,15 @@ from .algorithm import (
     validate_same_path,
     validate_window_bounds,
 )
+from .connection import (
+    DiffConnection,
+    DiffConnectionKey,
+    DiffStreamEvent,
+    DiffSubscriber,
+    SourceFailure,
+    SourceReset,
+    SourceSnapshot,
+)
 from .codec import (
     diagnostic_from_json,
     diagnostic_to_json,
@@ -58,6 +67,13 @@ __all__ = [
     "DiffStreamError",
     "DiffStreamValidationError",
     "DiffWindow",
+    "DiffConnection",
+    "DiffConnectionKey",
+    "DiffStreamEvent",
+    "DiffSubscriber",
+    "SourceFailure",
+    "SourceReset",
+    "SourceSnapshot",
     "build_diff_payload",
     "build_hunks",
     "diagnostic_from_json",
