@@ -477,3 +477,34 @@ def test_install_tool_missing_plan_returns_error(monkeypatch) -> None:
 
     with pytest.raises(StateError, match="no install plan"):
         main(["install-tool", "qemu"])
+
+
+def test_setup_rpi_uses_qemu_install_plan(monkeypatch, capsys) -> None:
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.platform.system", lambda: "Linux")
+    monkeypatch.setattr(
+        "griplab_service.vm_manger.griplab_vm.shutil.which",
+        lambda command: "apt-get" if command == "apt-get" else None,
+    )
+
+    exit_code = main(["setup", "rpi"])
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 0
+    assert "setup target: rpi" in captured.out
+    assert "install plan: qemu on linux via apt" in captured.out
+    assert "cloud-image-utils" in captured.out
+
+
+def test_setup_executes_requested_tools(monkeypatch) -> None:
+    monkeypatch.setattr("griplab_service.vm_manger.griplab_vm.platform.system", lambda: "Darwin")
+    monkeypatch.setattr(
+        "griplab_service.vm_manger.griplab_vm.shutil.which",
+        lambda command: "brew" if command == "brew" else None,
+    )
+    runner = FakeRunner()
+
+    exit_code = main(["setup", "macos", "--execute"], command_runner=runner)
+
+    assert exit_code == 0
+    assert runner.commands == [["brew", "install", "--cask", "orbstack"]]

@@ -212,6 +212,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run the install commands instead of printing the plan",
     )
+    setup_parser = subparsers.add_parser("setup", help="Show or run host setup steps")
+    setup_parser.add_argument("target", choices=("rpi", "macos", "windows-wsl"), help="Host setup target")
+    setup_parser.add_argument("--tool", action="append", help="Tool override; may be passed more than once")
+    setup_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Run setup commands instead of printing the plan",
+    )
 
     image_parser = subparsers.add_parser("image", help="Manage reusable provider bases")
     image_subparsers = image_parser.add_subparsers(dest="image_command")
@@ -580,6 +588,16 @@ def select_install_plan(tool: str) -> InstallPlan:
     return plan
 
 
+def setup_tools_for_target(target: str) -> tuple[str, ...]:
+    if target == "rpi":
+        return ("qemu",)
+    if target == "macos":
+        return ("orbstack",)
+    if target == "windows-wsl":
+        return ("wsl2",)
+    raise StateError(f"unknown setup target: {target}")
+
+
 def find_profile(config: ProjectConfig, name: str) -> dict[str, object]:
     for profile in config.profiles:
         if profile.get("name") == name:
@@ -660,16 +678,19 @@ def run_doctor() -> int:
 
 
 def run_install_tool(args: argparse.Namespace) -> int:
-    plan = select_install_plan(args.tool)
+    return run_install_plan(args.tool, args.execute, command_runner_from_args(args))
+
+
+def run_install_plan(tool: str, execute: bool, runner: CommandRunner) -> int:
+    plan = select_install_plan(tool)
     print(f"install plan: {plan.tool} on {plan.system} via {plan.manager}")
     for command in plan.commands:
         print("$ " + " ".join(command))
 
-    if not args.execute:
+    if not execute:
         print("dry-run only; pass --execute to run")
         return 0
 
-    runner = command_runner_from_args(args)
     for command in plan.commands:
         result = runner.run(list(command))
         if result.stdout:
@@ -679,6 +700,17 @@ def run_install_tool(args: argparse.Namespace) -> int:
         if result.returncode != 0:
             print(f"install command failed: {' '.join(command)}")
             return int(result.returncode)
+    return 0
+
+
+def run_setup(args: argparse.Namespace) -> int:
+    tools = tuple(args.tool) if args.tool else setup_tools_for_target(args.target)
+    runner = command_runner_from_args(args)
+    print(f"setup target: {args.target}")
+    for tool in tools:
+        exit_code = run_install_plan(tool, args.execute, runner)
+        if exit_code != 0:
+            return exit_code
     return 0
 
 
@@ -1027,6 +1059,8 @@ def main(argv: Sequence[str] | None = None, command_runner: CommandRunner | None
         return run_aliases(Path(args.project_root))
     if args.command == "install-tool":
         return run_install_tool(args)
+    if args.command == "setup":
+        return run_setup(args)
     if args.command == "image":
         return run_image(args)
     if args.command == "create":
