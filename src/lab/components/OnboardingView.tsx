@@ -6,6 +6,12 @@ import {
 import type { CollabEdit, OnboardingForm, OsKind, Peer, ProbeResult, ShellKind } from '../types';
 import { STOCK_AVATARS, LETTER_COLORS } from '../avatars';
 import { LAB_SERVICE_MODE } from '../dataMode';
+import {
+  getServicePeerHealth,
+  peerIdForCollaborator,
+  removeServiceCollaborator,
+  upsertServiceCollaborator,
+} from '../serviceClient/collaborators';
 import { probeServicePeer } from '../serviceClient/probe';
 import Avatar from './Avatar';
 
@@ -64,6 +70,19 @@ export default function OnboardingView() {
 
   const add = () => {
     if (!form.name.trim() || !form.ssh.trim() || !form.location.trim()) return;
+    if (LAB_SERVICE_MODE) {
+      void upsertServiceCollaborator({
+        peerId: peerIdForCollaborator(form.name, form.ssh, form.location, peers),
+        name: form.name.trim(),
+        sshAddress: form.ssh.trim(),
+        location: form.location.trim(),
+      })
+        .then(() => formTap?.set(EMPTY_FORM))
+        .catch((error: unknown) => {
+          setForm({ conn: { status: 'error', error: error instanceof Error ? error.message : String(error) } });
+        });
+      return;
+    }
     const connected = form.conn.status === 'connected';
     const peer: Peer = {
       id: `${form.name.trim().toLowerCase().replace(/\s+/g, '-')}-${peers.length}`,
@@ -79,20 +98,26 @@ export default function OnboardingView() {
     formTap?.set(EMPTY_FORM);
   };
 
-  const remove = (id: string) => peersTap?.set(peers.filter((p) => p.id !== id));
+  const remove = (id: string) => {
+    if (LAB_SERVICE_MODE) {
+      void removeServiceCollaborator(id).catch((error: unknown) => {
+        window.alert(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
+    peersTap?.set(peers.filter((p) => p.id !== id));
+  };
 
   const check = (id: string) => {
     const target = peers.find((p) => p.id === id);
     if (!target) return;
     if (LAB_SERVICE_MODE) {
-      void probeServicePeer({ sshAddress: target.sshAddress, location: target.location })
-        .then((r) => {
-          peersTap?.set(peers.map((p) => (p.id === id
-            ? { ...p, os: r.ok ? r.os : p.os, shells: r.ok ? r.shells : p.shells, online: r.ok }
-            : p)));
+      void getServicePeerHealth(id)
+        .then((health) => {
+          window.alert(`${target.name}: ${health.status}\n${health.summary}\n\n${health.checks.map((item) => `${item.id}: ${item.status} - ${item.summary}`).join('\n')}`);
         })
-        .catch(() => {
-          peersTap?.set(peers.map((p) => (p.id === id ? { ...p, online: false } : p)));
+        .catch((error: unknown) => {
+          window.alert(error instanceof Error ? error.message : String(error));
         });
       return;
     }
@@ -144,9 +169,11 @@ export default function OnboardingView() {
               <td>{cell(p, 'location', true)}</td>
               <td>{p.os ? OS_LABEL[p.os] : <span className="muted">unknown</span>}</td>
               <td>{p.shells.length ? p.shells.join(', ') : <span className="muted">—</span>}</td>
-              <td><span className={`dot ${p.online ? 'on' : 'off'}`} />{p.online ? 'online' : 'offline'}</td>
+              <td title={p.summary ?? ''}>
+                <span className={`dot ${p.online ? 'on' : 'off'}`} />{p.status ?? (p.online ? 'online' : 'offline')}
+              </td>
               <td className="row-actions">
-                {!p.isSelf && <button className="ghost" onClick={() => check(p.id)}>check</button>}
+                {!p.isSelf && <button className="ghost" onClick={() => check(p.id)}>{LAB_SERVICE_MODE ? 'health' : 'check'}</button>}
                 {!p.isSelf && <button className="ghost" onClick={() => remove(p.id)}>remove</button>}
               </td>
             </tr>
