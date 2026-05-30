@@ -1,0 +1,57 @@
+{
+  "contentType": "application/vnd.griplab.diff+json;version=1",
+  "diffId": "diff-000001",
+  "version": "dv000001",
+  "left": {
+    "peerId": "me",
+    "repoPath": "",
+    "path": "src/app.ts",
+    "ref": {
+      "kind": "working"
+    },
+    "fileVersion": "fv000010",
+    "contentHash": "sha256:left"
+  },
+  "right": {
+    "peerId": "alice",
+    "repoPath": "",
+    "path": "src/app.ts",
+    "ref": {
+      "kind": "working"
+    },
+    "fileVersion": "fv000007",
+    "contentHash": "sha256:right"
+  },
+  "window": {
+    "lineStart": 0,
+    "lineEnd": 3,
+    "truncated": false
+  },
+  "hunks": [
+    {
+      "id": "h000001",
+      "leftStart": 1,
+      "leftLines": 2,
+      "rightStart": 1,
+      "rightLines": 2,
+      "lines": [
+        {
+          "kind": "same",
+          "leftNo": 1,
+          "rightNo": 1,
+          "left": "alpha",
+          "right": "alpha"
+        },
+        {
+          "kind": "same",
+          "leftNo": 2,
+          "rightNo": 2,
+          "left": "beta",
+          "right": "beta"
+        }
+      ]
+    }
+  ],
+  "unifiedText": null,
+  "diagnostics": []
+}

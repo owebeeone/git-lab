@@ -1,0 +1,50 @@
+{
+  "contentType": "application/vnd.griplab.diff+json;version=1",
+  "diffId": "diff-000002",
+  "version": "dv000001",
+  "left": {
+    "peerId": "me",
+    "repoPath": "",
+    "path": "src/app.ts",
+    "ref": {
+      "kind": "head"
+    },
+    "fileVersion": "fv000010",
+    "contentHash": "sha256:left"
+  },
+  "right": {
+    "peerId": "alice",
+    "repoPath": "",
+    "path": "src/app.ts",
+    "ref": {
+      "kind": "working"
+    },
+    "fileVersion": "fv000000",
+    "contentHash": "sha256:missing"
+  },
+  "window": {
+    "lineStart": 20,
+    "lineEnd": 40,
+    "truncated": true
+  },
+  "hunks": [],
+  "unifiedText": null,
+  "diagnostics": [
+    {
+      "code": "missing-file",
+      "message": "right file does not exist",
+      "endpoint": "right",
+      "details": {
+        "path": "src/app.ts"
+      }
+    },
+    {
+      "code": "window-truncated",
+      "message": "requested diff window exceeded service caps",
+      "endpoint": null,
+      "details": {
+        "lineEnd": 40
+      }
+    }
+  ]
+}
