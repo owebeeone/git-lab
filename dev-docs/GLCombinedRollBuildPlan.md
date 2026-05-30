@@ -702,17 +702,124 @@ Exit:
 
 - file viewer can inspect a non-local peer through the hub.
 
-## Combined Step 10D: Hub Synthetic Diff Stream
+## Combined Step 10D-1: Diffstream Models And Codec
 
 Backend scope:
 
-- Implement the hub-owned synthetic diff stream from
+- Start the standalone `services/diffstream` package for the pure synthetic diff
+  payload model.
+
+Frontend scope:
+
+- None.
+
+Deliverables:
+
+- `services/diffstream/pyproject.toml`.
+- `diffstream.model` with endpoint, ref, window, line, hunk, diagnostic, source
+  state, and payload dataclasses.
+- `diffstream.codec` JSON round-trip for
+  `application/vnd.griplab.diff+json;version=1`.
+- version/id conventions for `diffId`, payload `version`, and hunk ids.
+- golden fixtures for empty/same diff and diagnostics.
+- no imports from `griplab_service`, `aiohttp`, watchdog, git, or GRIP.
+
+Verification:
+
+- `uv run --with pytest --with-editable services/diffstream pytest services/diffstream/tests -q`
+- JSON fixture round-trips preserve the exact protocol field names.
+- import scan confirms `diffstream` is service-independent.
+
+Exit:
+
+- structured diff payloads can be generated, validated, serialized, and tested
+  without the hub.
+
+## Combined Step 10D-2: Diffstream Algorithm
+
+Backend scope:
+
+- Implement the pure text diff algorithm in `services/diffstream`.
+
+Frontend scope:
+
+- None.
+
+Deliverables:
+
+- `diffstream.algorithm` using Python stdlib `difflib.SequenceMatcher`.
+- structured hunk conversion for same/add/delete/replace cases.
+- context line behavior from `contextLines`.
+- absolute one-based line numbers in hunks.
+- same-path/window validation helpers.
+- optional `unifiedText` generation when requested by `diff.get`.
+
+Rules:
+
+- Hunk line numbers are absolute one-based source-file display lines.
+- Service mode is authoritative if mock LCS row boundaries differ.
+
+Verification:
+
+- same/add/delete/replace hunk conversion tests.
+- context line and window-boundary tests.
+- one-based line number tests.
+- binary/decode/missing input diagnostics remain codec-valid.
+
+Exit:
+
+- pure diff semantics are correct before any hub or websocket work.
+
+## Combined Step 10D-3: DiffConnection With Fake Sources
+
+Backend scope:
+
+- Implement async diff orchestration in `services/diffstream` against abstract
+  source streams.
+
+Frontend scope:
+
+- None.
+
+Deliverables:
+
+- `diffstream.connection.DiffConnection`.
+- source-stream protocol for left/right snapshots, resets, and errors.
+- ref-counted subscribers.
+- recompute when either source changes.
+- coalescing policy for concurrent left/right updates.
+- diagnostics while either side is mid-reset or unavailable.
+- unsubscribe closes source streams when the last subscriber leaves.
+
+Rules:
+
+- `diffstream.connection` may use `asyncio` but must not import hub/aiohttp code.
+- Source updates are serialized; no diff snapshot is published from a partially
+  applied source delta.
+
+Verification:
+
+- fake left/right source snapshots produce an ordered diff snapshot.
+- update on either side recomputes.
+- concurrent updates coalesce into ordered snapshots.
+- source reset/error produces diagnostics.
+- ref-count tests prove source streams close after the last subscriber.
+
+Exit:
+
+- diff orchestration is testable without the hub.
+
+## Combined Step 10D-4: Hub Diff Stream Integration
+
+Backend scope:
+
+- Wire `diffstream` into the hub-owned synthetic diff stream from
   `dev-docs/GLDiffStreamDesign.md`.
 
 Frontend scope:
 
 - Protocol types and tap test fixtures only. Full `DiffViewerView` replacement
-  is Step 10E.
+  is Step 10E-2.
 
 Deliverables:
 
@@ -720,45 +827,68 @@ Deliverables:
 - `diff.window.update`.
 - `diff.unsubscribe`.
 - optional one-shot `diff.get` returning the same structured payload shape.
-- `DiffConnection` owns left/right routed file subscriptions.
+- hub adapter that turns routed `file.subscribe` streams into `diffstream`
+  source streams.
 - structured hunk payload `application/vnd.griplab.diff+json;version=1`.
 - diagnostics for missing file, binary file, decode failure, truncation,
   peer-offline, and unsupported ref.
-- recompute policy: serialize source updates and publish full synthetic
-  snapshots/resets in v1.
-
-Rules:
-
-- The browser does not open two source file streams directly in service mode.
-- The hub may share and reference-count identical `DiffConnection` instances.
-- Hunk line numbers are absolute one-based source-file display lines.
 
 Verification:
 
-- same/add/delete/replace hunk conversion tests.
 - two local service peers through the hub produce a routed synthetic diff.
 - editing either source file updates the synthetic diff stream.
+- `diff.window.update`, `diff.unsubscribe`, and `diff.get` tests.
 - peer disconnect produces a structured diagnostic or stream error.
+- full service Python test suite remains green.
 
 Exit:
 
 - hub can publish canonical live structured diffs.
 
-## Combined Step 10E: Browser Diff Integration
+## Combined Step 10E-1: TypeScript Diff Types And Tap
 
 Backend scope:
 
-- No new backend protocol unless Step 10D exposes a renderer-facing gap.
+- None.
 
 Frontend scope:
 
-- Service diff view integration.
+- Add TS protocol types/validators and the service diff stream tap.
 
 Deliverables:
 
 - service `diffContentTap.ts` using `createAsyncStreamMultiTap`.
 - grips for diff hunks, diagnostics, stream status, and version.
 - `DIFF_WINDOW` as the diff-specific window input grip.
+- TypeScript diff payload types/parser in `src/lab/serviceClient/diff`.
+- TS fixture tests consume Python golden fixtures from `services/diffstream`.
+
+Verification:
+
+- TS parser accepts `diffstream` golden fixtures.
+- `diffContentTap` maps snapshots to `DIFF_HUNKS`, `DIFF_DIAGNOSTICS`,
+  `DIFF_STREAM_STATUS`, and `DIFF_VERSION`.
+- `DIFF_WINDOW` participates in request keys and window update calls.
+- `npm run test:unit`
+- `npm run build`
+
+Exit:
+
+- browser service code can consume synthetic diff streams without rendering
+  changes.
+
+## Combined Step 10E-2: Diff View Renderer Integration
+
+Backend scope:
+
+- No new backend protocol unless Step 10D-4 exposes a renderer-facing gap.
+
+Frontend scope:
+
+- Service and mock diff view integration.
+
+Deliverables:
+
 - `DiffViewerView` renders structured hunks from `diff.subscribe`.
 - diff view uses a keyed context such as `diff:main`.
 - mock mode emits the same structured hunk model at the tap boundary.
@@ -773,6 +903,10 @@ Verification:
   hunk path.
 - source scan confirms service-mode diff path no longer depends on static file
   content.
+- `npm run build`
+- `VITE_GL_DATA=service npm run build`
+- `npm run lint`
+- `npm test`
 
 Exit:
 
@@ -860,7 +994,16 @@ serv-grip-build/step-6-local-service-app
 serv-grip-build/step-7-hub-presence
 serv-grip-build/step-8-ssh-onboarding
 serv-grip-build/step-9-chat
-serv-grip-build/step-10-cross-peer
+serv-grip-build/step-10a-hub-relay
+serv-grip-build/step-10b-cross-peer-workspace
+serv-grip-build/step-10c-cross-peer-files
+serv-grip-build/step-10d-1-diffstream-models
+serv-grip-build/step-10d-2-diffstream-algorithm
+serv-grip-build/step-10d-3-diffconnection-fakes
+serv-grip-build/step-10d-4-hub-diff-stream
+serv-grip-build/step-10e-1-ts-diff-tap
+serv-grip-build/step-10e-2-diff-view
+serv-grip-build/step-10f-remote-commands
 serv-grip-build/step-11-hardening
 ```
 
