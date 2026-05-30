@@ -1,7 +1,7 @@
 import type { AtomTapHandle } from '@owebeeone/grip-react';
 import { defineGrip } from '../runtime';
 import type {
-  ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId,
+  ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId, UiScaleId,
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
   CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
   RepoStatus, DependencyEdge, WorkspaceTreeEntry, LineWindow, FileStreamStatus,
@@ -16,6 +16,8 @@ export const CURRENT_VIEW_TAP = defineGrip<AtomTapHandle<ViewId>>('Lab.CurrentVi
 // Appearance
 export const THEME = defineGrip<ThemeId>('Lab.Theme', 'dark');
 export const THEME_TAP = defineGrip<AtomTapHandle<ThemeId>>('Lab.Theme.Tap');
+export const UI_SCALE = defineGrip<UiScaleId>('Lab.UiScale', 'standard');
+export const UI_SCALE_TAP = defineGrip<AtomTapHandle<UiScaleId>>('Lab.UiScale.Tap');
 
 // Workspace presentation: tiled cards vs. animated graph
 export const WORKSPACE_LAYOUT = defineGrip<'tiles' | 'graph'>('Lab.WorkspaceLayout', 'graph');

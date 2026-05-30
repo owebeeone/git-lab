@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 from fixtures.repo_env import RepoDefinition, pyproj_repo, react_repo
 from griplab_service.local_client.deps import get_dependency_graph
@@ -20,6 +21,24 @@ def test_collect_workspace_status_for_classic_repos(tmp_path: Path) -> None:
     assert by_path["react"].dirty is True
     assert by_path["react"].changed_files[0].path == "src/index.ts"
     assert by_path["react"].changed_files[0].change == "modified"
+
+
+def test_collect_workspace_status_reports_ignored_files(tmp_path: Path) -> None:
+    built = RepoDefinition(react_repo("app")).build(tmp_path / "workspace")
+    repo = built.workspace_root / "app"
+    (repo / ".gitignore").write_text("scratch.txt\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "ignore scratch"], check=True)
+    (repo / "scratch.txt").write_text("ignored\n", encoding="utf-8")
+
+    statuses = collect_workspace_status(built.workspace_root)
+
+    app = next(status for status in statuses if status.path == "app")
+    assert app.dirty is False
+    assert {"path": "scratch.txt", "change": "ignored"} in [
+        {"path": file.path, "change": file.change}
+        for file in app.changed_files
+    ]
 
 
 def test_dependency_graph_reads_repo_definitions(tmp_path: Path) -> None:

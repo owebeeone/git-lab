@@ -1,6 +1,7 @@
 import { createAtomValueTap, useGrip, useKeyedChildContext, type GripContext } from '@owebeeone/grip-react';
 import {
   PEERS,
+  SELECTED_PEER_ID,
   SELECTED_FILE, SELECTED_FILE_TAP,
   DIFF_LEFT, DIFF_LEFT_TAP,
   DIFF_RIGHT, DIFF_RIGHT_TAP,
@@ -52,11 +53,12 @@ function EndpointPicker({
 
 export default function DiffViewerView() {
   const peers = useGrip(PEERS) ?? [];
+  const selectedPeerId = useGrip(SELECTED_PEER_ID) ?? 'me';
   const selected = useGrip(SELECTED_FILE);
   const selectTap = useGrip(SELECTED_FILE_TAP);
-  const left = useGrip(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!;
+  const rawLeft = useGrip(DIFF_LEFT) ?? DIFF_LEFT.defaultValue!;
   const leftTap = useGrip(DIFF_LEFT_TAP);
-  const right = useGrip(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!;
+  const rawRight = useGrip(DIFF_RIGHT) ?? DIFF_RIGHT.defaultValue!;
   const rightTap = useGrip(DIFF_RIGHT_TAP);
   const tree = useGrip(WORKSPACE_TREE) ?? [];
 
@@ -75,6 +77,8 @@ export default function DiffViewerView() {
   const hunks = useGrip(DIFF_HUNKS, ctx) ?? [];
   const diagnostics = useGrip(DIFF_DIAGNOSTICS, ctx) ?? [];
   const streamStatus = useGrip(DIFF_STREAM_STATUS, ctx) ?? { status: 'idle', error: null };
+  const left = effectiveEndpoint(rawLeft, selectedPeerId);
+  const right = effectiveEndpoint(rawRight, selectedPeerId);
   const rows = hunks.flatMap((hunk) => hunk.lines);
   const leftPeer = peers.find((p) => p.id === left.peerId);
 
@@ -147,4 +151,11 @@ export default function DiffViewerView() {
       </div>
     </section>
   );
+}
+
+function effectiveEndpoint(endpoint: DiffEndpoint, selectedPeerId: string): DiffEndpoint {
+  if (endpoint.peerId === 'me' && selectedPeerId && selectedPeerId !== 'me') {
+    return { ...endpoint, peerId: selectedPeerId };
+  }
+  return endpoint;
 }

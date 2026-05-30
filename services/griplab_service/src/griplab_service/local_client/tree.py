@@ -18,6 +18,7 @@ from griplab_service.local_client.workspace import discover_repos
 
 DEFAULT_TREE_IGNORE_NAMES = frozenset({
     ".git",
+    ".griplab",
     ".grip-lab",
     ".grip-lab-hub",
     ".mypy_cache",
@@ -46,12 +47,50 @@ class TreeSnapshot:
 
 
 def build_tree_snapshot(workspace_root: Path, ignore_names: frozenset[str] = DEFAULT_TREE_IGNORE_NAMES) -> TreeSnapshot:
-    entries: list[TreeEntry] = []
-    for repo in discover_repos(workspace_root):
-        entries.extend(scan_repo_tree(workspace_root, repo, ignore_names))
+    entries = scan_workspace_tree(workspace_root, ignore_names)
     entries.sort(key=lambda item: (item.repo_path, item.path, item.kind))
     version = tree_version(entries)
     return TreeSnapshot(version=version, entries=entries)
+
+
+def scan_workspace_tree(workspace_root: Path, ignore_names: frozenset[str]) -> list[TreeEntry]:
+    repos = sorted(discover_repos(workspace_root), key=lambda item: len(item.relative_to(workspace_root).parts), reverse=True)
+    if workspace_root not in repos:
+        repos.append(workspace_root)
+    entries: list[TreeEntry] = []
+    for root, dirnames, filenames in os.walk(workspace_root):
+        dirnames[:] = sorted(name for name in dirnames if name not in ignore_names)
+        root_path = Path(root)
+        try:
+            root_rel = root_path.relative_to(workspace_root)
+        except ValueError:
+            continue
+        if has_ignored_part(root_rel, ignore_names):
+            continue
+        for filename in sorted(filenames):
+            if filename in ignore_names:
+                continue
+            path = root_path / filename
+            try:
+                workspace_rel = path.relative_to(workspace_root)
+            except ValueError:
+                continue
+            if has_ignored_part(workspace_rel, ignore_names):
+                continue
+            repo = containing_repo(path, repos, workspace_root)
+            repo_path = "" if repo == workspace_root else repo.relative_to(workspace_root).as_posix()
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            entries.append(TreeEntry(
+                repo_path=repo_path,
+                path=path.relative_to(repo).as_posix(),
+                kind="file",
+                size=stat.st_size,
+                mtime_ms=int(stat.st_mtime * 1000),
+            ))
+    return entries
 
 
 def scan_repo_tree(workspace_root: Path, repo: Path, ignore_names: frozenset[str]) -> list[TreeEntry]:
@@ -78,6 +117,16 @@ def scan_repo_tree(workspace_root: Path, repo: Path, ignore_names: frozenset[str
                 mtime_ms=int(stat.st_mtime * 1000),
             ))
     return entries
+
+
+def containing_repo(path: Path, repos: list[Path], workspace_root: Path) -> Path:
+    for repo in repos:
+        try:
+            path.relative_to(repo)
+        except ValueError:
+            continue
+        return repo
+    return workspace_root
 
 
 def tree_snapshot_payload(workspace_root: Path) -> dict[str, object]:

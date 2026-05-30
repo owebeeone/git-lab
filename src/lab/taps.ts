@@ -3,6 +3,7 @@ import { grok } from '../runtime';
 import {
   CURRENT_VIEW, CURRENT_VIEW_TAP,
   THEME, THEME_TAP,
+  UI_SCALE, UI_SCALE_TAP,
   WORKSPACE_LAYOUT, WORKSPACE_LAYOUT_TAP,
   WORKSPACE_MENU, WORKSPACE_MENU_TAP,
   PEERS, PEERS_TAP,
@@ -58,6 +59,7 @@ import type { RepoStatus } from './types';
 export function registerLabUiTaps() {
   grok.registerTap(createAtomValueTap(CURRENT_VIEW, { initial: CURRENT_VIEW.defaultValue!, handleGrip: CURRENT_VIEW_TAP }));
   grok.registerTap(createAtomValueTap(THEME, { initial: THEME.defaultValue!, handleGrip: THEME_TAP }));
+  grok.registerTap(createAtomValueTap(UI_SCALE, { initial: UI_SCALE.defaultValue!, handleGrip: UI_SCALE_TAP }));
   grok.registerTap(createAtomValueTap(WORKSPACE_LAYOUT, { initial: WORKSPACE_LAYOUT.defaultValue!, handleGrip: WORKSPACE_LAYOUT_TAP }));
   grok.registerTap(createAtomValueTap(WORKSPACE_MENU, { initial: WORKSPACE_MENU.defaultValue ?? null, handleGrip: WORKSPACE_MENU_TAP }));
   grok.registerTap(createAtomValueTap(PEERS, { initial: PEERS.defaultValue!, handleGrip: PEERS_TAP }));

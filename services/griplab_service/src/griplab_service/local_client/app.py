@@ -746,7 +746,10 @@ class LocalClientConnection:
         assert stream.queue is not None
         try:
             while stream.stream_id in self.tree_streams:
-                await stream.queue.get()
+                try:
+                    await asyncio.wait_for(stream.queue.get(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    pass
                 await asyncio.sleep(0.05)
                 while not stream.queue.empty():
                     stream.queue.get_nowait()

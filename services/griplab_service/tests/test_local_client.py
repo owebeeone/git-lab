@@ -215,6 +215,8 @@ def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
     config = load_config(write_config(tmp_path))
     (config.workspace.root / "src").mkdir()
     (config.workspace.root / "src" / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    (config.workspace.root / ".griplab").mkdir()
+    (config.workspace.root / ".griplab" / "client.json").write_text("{}\n", encoding="utf-8")
     (config.workspace.root / "node_modules").mkdir()
     (config.workspace.root / "node_modules" / "ignored.js").write_text("nope\n", encoding="utf-8")
 
@@ -223,8 +225,26 @@ def test_tree_snapshot_excludes_ignored_paths(tmp_path: Path) -> None:
 
     assert "README.md" in paths
     assert "src/app.py" in paths
+    assert "client.json" not in paths
     assert "node_modules/ignored.js" not in paths
     assert payload["version"]
+
+
+def test_tree_snapshot_preserves_child_repo_file_address(tmp_path: Path) -> None:
+    config = load_config(write_config(tmp_path))
+    child = config.workspace.root / "child"
+    child.mkdir()
+    subprocess.run(["git", "-C", str(child), "init", "-q"], check=True)
+    (child / "README.md").write_text("child\n", encoding="utf-8")
+
+    payload = tree_snapshot_payload(config.workspace.root)
+    entries = {
+        (str(entry["repoPath"]), str(entry["path"]))
+        for entry in payload["entries"]
+    }
+
+    assert ("", "README.md") in entries
+    assert ("child", "README.md") in entries
 
 
 def test_tree_stream_publishes_watchdog_changes_and_refresh(tmp_path: Path) -> None:
@@ -256,6 +276,11 @@ def test_tree_stream_publishes_watchdog_changes_and_refresh(tmp_path: Path) -> N
                     changed_paths = {entry["path"] for entry in changed["payload"]["payload"]["entries"]}
                     assert "src/new.py" in changed_paths
 
+                    (config.workspace.root / "src" / "new.py").unlink()
+                    removed = await ws.receive_json(timeout=2)
+                    removed_paths = {entry["path"] for entry in removed["payload"]["payload"]["entries"]}
+                    assert "src/new.py" not in removed_paths
+
                     await ws.send_json({
                         "messageId": "m000002",
                         "kind": "request",
@@ -265,7 +290,7 @@ def test_tree_stream_publishes_watchdog_changes_and_refresh(tmp_path: Path) -> N
                     snapshot = await ws.receive_json(timeout=2)
                     response = await ws.receive_json(timeout=2)
                     assert snapshot["kind"] == "stream-event"
-                    assert snapshot["payload"]["seq"] == 3
+                    assert snapshot["payload"]["seq"] == 4
                     assert response["kind"] == "response"
                     assert response["payload"] == {"refreshed": 1}
         finally:

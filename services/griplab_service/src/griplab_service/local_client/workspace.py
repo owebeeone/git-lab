@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Sequence
 
-ChangeKind = Literal["modified", "added", "deleted", "untracked", "renamed"]
+ChangeKind = Literal["modified", "added", "deleted", "untracked", "renamed", "ignored"]
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ def collect_repo_status(workspace_root: Path, repo_path: str, *, git: Path | str
     try:
         branch = run_git(repo, ["branch", "--show-current"], git=git).stdout.strip() or "detached"
         head = run_git(repo, ["rev-parse", "--short", "HEAD"], git=git).stdout.strip()
-        porcelain = run_git(repo, ["status", "--porcelain=v1", "--branch"], git=git).stdout.splitlines()
+        porcelain = run_git(repo, ["status", "--porcelain=v1", "--branch", "--ignored=matching"], git=git).stdout.splitlines()
         ahead, behind = parse_ahead_behind(porcelain[0] if porcelain else "")
         changed = [parse_changed_file(line) for line in porcelain[1:] if line.strip()]
         return RepoStatus(
@@ -65,7 +65,7 @@ def collect_repo_status(workspace_root: Path, repo_path: str, *, git: Path | str
             head=head,
             ahead=ahead,
             behind=behind,
-            dirty=bool(changed),
+            dirty=any(file.change != "ignored" for file in changed),
             changed_files=changed,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
@@ -100,6 +100,8 @@ def parse_changed_file(line: str) -> ChangedFile:
     path = raw_path.split(" -> ", 1)[-1]
     if status == "??":
         change: ChangeKind = "untracked"
+    elif status == "!!":
+        change = "ignored"
     elif "R" in status:
         change = "renamed"
     elif "A" in status:

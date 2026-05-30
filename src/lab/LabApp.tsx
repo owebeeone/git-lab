@@ -1,6 +1,6 @@
 import { useGrip } from '@owebeeone/grip-react';
 import type { MouseEvent } from 'react';
-import { CURRENT_VIEW, CURRENT_VIEW_TAP, THEME } from './grips';
+import { CURRENT_VIEW, CURRENT_VIEW_TAP, THEME, UI_SCALE } from './grips';
 import { SERVICE_CONNECTION } from './grips.service';
 import { LAB_SERVICE_MODE } from './dataMode';
 import type { ViewId } from './types';
@@ -33,10 +33,11 @@ export default function LabApp() {
   const view = useGrip(CURRENT_VIEW);
   const viewTap = useGrip(CURRENT_VIEW_TAP);
   const theme = useGrip(THEME) ?? 'dark';
+  const uiScale = useGrip(UI_SCALE) ?? 'standard';
   const service = useGrip(SERVICE_CONNECTION);
 
   return (
-    <div className="lab-root" data-theme={theme}>
+    <div className="lab-root" data-theme={theme} data-ui-scale={uiScale}>
       <header className="lab-tabbar">
         <div className="lab-brand">grip-lab</div>
         <nav className="lab-tabs">

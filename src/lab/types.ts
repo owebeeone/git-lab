@@ -8,6 +8,7 @@
 export type ViewId = 'onboarding' | 'status' | 'file' | 'diff' | 'chat' | 'settings' | 'sessions';
 
 export type ThemeId = 'dark' | 'light';
+export type UiScaleId = 'compact' | 'standard' | 'large';
 
 export type OsKind = 'macos' | 'linux' | 'windows';
 
@@ -100,7 +101,7 @@ export interface GraphRenderNode {
   changedFiles: ChangedFile[];
 }
 
-export type FileChangeKind = 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed';
+export type FileChangeKind = 'modified' | 'added' | 'deleted' | 'untracked' | 'renamed' | 'ignored';
 
 export interface ChangedFile {
   path: string;
