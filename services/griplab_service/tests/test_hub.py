@@ -6,6 +6,7 @@ from aiohttp import ClientSession, WSCloseCode
 
 from griplab_service.config import load_config
 from griplab_service.hub import HubServer
+from griplab_service.hub.app import PeerRegistry
 
 
 def write_hub_config(tmp_path: Path) -> Path:
@@ -154,3 +155,218 @@ def test_hub_chat_rejects_malformed_links(tmp_path: Path) -> None:
             server.stop()
 
     asyncio.run(run())
+
+
+def test_hub_routes_request_to_target_peer(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.request",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.ping",
+                            "payload": {"value": 42},
+                        },
+                    })
+                    routed = await target.receive_json(timeout=2)
+                    assert routed["kind"] == "request"
+                    assert routed["method"] == "echo.ping"
+                    assert routed["payload"] == {"value": 42}
+                    assert routed["messageId"] != "m000001"
+
+                    await target.send_json({
+                        "messageId": routed["messageId"],
+                        "kind": "response",
+                        "method": "echo.ping",
+                        "payload": {"ok": True, "value": 42},
+                    })
+                    response = await caller.receive_json(timeout=2)
+                    assert response["kind"] == "response"
+                    assert response["messageId"] == "m000001"
+                    assert response["method"] == "hub.route.request"
+                    assert response["payload"] == {"ok": True, "value": 42}
+
+                    await target.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routes_subscription_events_to_caller_stream(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.subscribe",
+                        "streamId": "caller-stream",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.subscribe",
+                            "payload": {"topic": "demo"},
+                        },
+                    })
+                    routed = await target.receive_json(timeout=2)
+                    assert routed["kind"] == "request"
+                    assert routed["method"] == "echo.subscribe"
+                    assert routed["streamId"] != "caller-stream"
+                    assert routed["payload"] == {"topic": "demo"}
+
+                    await target.send_json({
+                        "messageId": routed["messageId"],
+                        "kind": "stream-event",
+                        "method": "echo.subscribe",
+                        "streamId": routed["streamId"],
+                        "payload": {
+                            "streamId": routed["streamId"],
+                            "seq": 1,
+                            "event": "snapshot",
+                            "payload": {"items": [1, 2, 3]},
+                        },
+                    })
+                    event = await caller.receive_json(timeout=2)
+                    assert event["kind"] == "stream-event"
+                    assert event["method"] == "hub.route.subscribe"
+                    assert event["streamId"] == "caller-stream"
+                    assert event["payload"] == {
+                        "streamId": "caller-stream",
+                        "seq": 1,
+                        "event": "snapshot",
+                        "payload": {"items": [1, 2, 3]},
+                    }
+
+                    await target.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_route_errors_when_target_unknown(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.request",
+                        "payload": {
+                            "targetPeerId": "missing",
+                            "method": "echo.ping",
+                            "payload": {},
+                        },
+                    })
+                    response = await caller.receive_json(timeout=2)
+                    assert response["kind"] == "error"
+                    assert response["messageId"] == "m000001"
+                    assert response["error"]["code"] == "peer-offline"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routed_stream_errors_when_target_disconnects(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.subscribe",
+                        "streamId": "caller-stream",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.subscribe",
+                            "payload": {},
+                        },
+                    })
+                    await target.receive_json(timeout=2)
+                    await target.close()
+
+                    event = await caller.receive_json(timeout=2)
+                    assert event["kind"] == "stream-event"
+                    assert event["streamId"] == "caller-stream"
+                    assert event["payload"]["event"] == "error"
+                    assert event["payload"]["payload"]["code"] == "peer-offline"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_routed_request_times_out(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(PeerRegistry, "route_request_timeout_seconds", 0.01)
+
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    target = await session.ws_connect(server.ws_url)
+                    await hello_peer(target, "target")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "hub.route.request",
+                        "payload": {
+                            "targetPeerId": "target",
+                            "method": "echo.never",
+                            "payload": {},
+                        },
+                    })
+                    await target.receive_json(timeout=2)
+                    response = await caller.receive_json(timeout=2)
+                    assert response["kind"] == "error"
+                    assert response["messageId"] == "m000001"
+                    assert response["error"]["code"] == "target-timeout"
+                    await target.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+async def hello_peer(ws: object, peer_id: str) -> None:
+    await ws.send_json({
+        "messageId": f"hello-{peer_id}",
+        "kind": "request",
+        "method": "peer.hello",
+        "payload": {"peerId": peer_id, "name": peer_id.title()},
+    })
+    response = await ws.receive_json(timeout=2)
+    assert response["kind"] == "response"
+    assert response["payload"] == {"peerId": peer_id}

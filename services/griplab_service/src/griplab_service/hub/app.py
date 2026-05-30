@@ -144,6 +144,9 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
 
 
 async def handle_protocol_message(connection: "HubConnection", envelope: ProtocolEnvelope) -> None:
+    if envelope.kind in {"response", "error", "stream-event"}:
+        await connection.registry.handle_relay_message(connection, envelope)
+        return
     if envelope.kind != "request":
         await connection.send(ProtocolEnvelope.error_response(
             message_id=envelope.message_id,
@@ -154,6 +157,7 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
     if envelope.method == "peer.hello":
         peer_id = connection.registry.hello(envelope.payload)
         connection.peer_id = peer_id
+        connection.registry.register_connection(peer_id, connection)
         await connection.send(ProtocolEnvelope.response(
             message_id=envelope.message_id,
             method=envelope.method,
@@ -180,6 +184,12 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
             ))
             return
         await connection.subscribe_chat(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "hub.route.request":
+        await connection.registry.route_request(connection, envelope)
+        return
+    if envelope.method == "hub.route.subscribe":
+        await connection.registry.route_subscribe(connection, envelope)
         return
     if envelope.method == "chat.post":
         try:
@@ -225,6 +235,25 @@ class ChatStream:
     task: asyncio.Task[None] | None = None
 
 
+@dataclass
+class RoutedRequest:
+    caller: "HubConnection"
+    caller_message_id: str
+    caller_method: str
+    target: "HubConnection"
+    timeout_task: asyncio.Task[None] | None = None
+
+
+@dataclass
+class RoutedStream:
+    caller: "HubConnection"
+    caller_message_id: str
+    caller_stream_id: str
+    caller_method: str
+    target: "HubConnection"
+    target_stream_id: str
+
+
 class HubConnection:
     def __init__(
         self,
@@ -263,7 +292,7 @@ class HubConnection:
 
     async def close(self) -> None:
         if self.peer_id:
-            self.registry.mark_offline(self.peer_id)
+            await self.registry.connection_closed(self.peer_id, self)
         streams = list(self.presence_streams.values())
         self.presence_streams.clear()
         for stream in streams:
@@ -337,9 +366,16 @@ class HubConnection:
 
 
 class PeerRegistry:
+    route_request_timeout_seconds = 5.0
+
     def __init__(self) -> None:
         self.peers: dict[str, dict[str, object]] = {}
+        self.connections: dict[str, HubConnection] = {}
         self.presence_subscribers: set[asyncio.Queue[None]] = set()
+        self._relay_index = 0
+        self.routed_requests: dict[str, RoutedRequest] = {}
+        self.routed_streams_by_target: dict[str, RoutedStream] = {}
+        self.routed_streams_by_caller: dict[str, RoutedStream] = {}
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer_id = str(payload.get("peerId", ""))
@@ -357,6 +393,16 @@ class PeerRegistry:
             "lastSeen": int(time.time() * 1000),
         }
         return peer_id
+
+    def register_connection(self, peer_id: str, connection: HubConnection) -> None:
+        self.connections[peer_id] = connection
+
+    async def connection_closed(self, peer_id: str, connection: HubConnection) -> None:
+        if self.connections.get(peer_id) is connection:
+            self.connections.pop(peer_id, None)
+        await self._fail_target_routes(connection, "peer-offline", f"target peer disconnected: {peer_id}")
+        self._remove_caller_routes(connection)
+        self.mark_offline(peer_id)
 
     def mark_offline(self, peer_id: str) -> None:
         peer = self.peers.get(peer_id)
@@ -380,3 +426,201 @@ class PeerRegistry:
     def publish(self) -> None:
         for queue in list(self.presence_subscribers):
             queue.put_nowait(None)
+
+    async def route_request(self, caller: HubConnection, envelope: ProtocolEnvelope) -> None:
+        target = await self._resolve_target(caller, envelope)
+        if target is None:
+            return
+        target_peer_id, target_connection, method, payload = target
+        del target_peer_id
+        target_message_id = self._next_relay_message_id()
+        routed = RoutedRequest(
+            caller=caller,
+            caller_message_id=envelope.message_id,
+            caller_method=envelope.method or "hub.route.request",
+            target=target_connection,
+        )
+        routed.timeout_task = asyncio.create_task(self._expire_routed_request(target_message_id))
+        self.routed_requests[target_message_id] = routed
+        await target_connection.send(ProtocolEnvelope.request(
+            message_id=target_message_id,
+            method=method,
+            payload=payload,
+        ))
+
+    async def route_subscribe(self, caller: HubConnection, envelope: ProtocolEnvelope) -> None:
+        if not envelope.stream_id:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "hub.route.subscribe requires streamId"),
+            ))
+            return
+        target = await self._resolve_target(caller, envelope)
+        if target is None:
+            return
+        target_peer_id, target_connection, method, payload = target
+        del target_peer_id
+        target_message_id = self._next_relay_message_id()
+        target_stream_id = self._next_relay_stream_id()
+        stream = RoutedStream(
+            caller=caller,
+            caller_message_id=envelope.message_id,
+            caller_stream_id=envelope.stream_id,
+            caller_method=envelope.method or "hub.route.subscribe",
+            target=target_connection,
+            target_stream_id=target_stream_id,
+        )
+        self.routed_streams_by_target[target_stream_id] = stream
+        self.routed_streams_by_caller[envelope.stream_id] = stream
+        await target_connection.send(ProtocolEnvelope(
+            message_id=target_message_id,
+            kind="request",
+            method=method,
+            stream_id=target_stream_id,
+            payload=payload,
+        ))
+
+    async def handle_relay_message(self, target: HubConnection, envelope: ProtocolEnvelope) -> None:
+        if envelope.kind in {"response", "error"}:
+            await self._handle_relay_response(target, envelope)
+            return
+        if envelope.kind == "stream-event":
+            await self._handle_relay_stream_event(target, envelope)
+
+    async def _handle_relay_response(self, target: HubConnection, envelope: ProtocolEnvelope) -> None:
+        routed = self.routed_requests.pop(envelope.message_id, None)
+        if routed is None:
+            return
+        if routed.target is not target:
+            self.routed_requests[envelope.message_id] = routed
+            return
+        if routed.timeout_task is not None:
+            routed.timeout_task.cancel()
+        if envelope.kind == "error":
+            await routed.caller.send(ProtocolEnvelope.error_response(
+                message_id=routed.caller_message_id,
+                method=routed.caller_method,
+                error=envelope.error or ErrorInfo("target-error", "target returned an error"),
+            ))
+            return
+        await routed.caller.send(ProtocolEnvelope.response(
+            message_id=routed.caller_message_id,
+            method=routed.caller_method,
+            payload=envelope.payload,
+        ))
+
+    async def _handle_relay_stream_event(self, target: HubConnection, envelope: ProtocolEnvelope) -> None:
+        if not envelope.stream_id:
+            return
+        routed = self.routed_streams_by_target.get(envelope.stream_id)
+        if routed is None or routed.target is not target:
+            return
+        event = StreamEvent(
+            stream_id=routed.caller_stream_id,
+            seq=int(envelope.payload.get("seq", 0)),
+            event=str(envelope.payload.get("event", "message")),
+            payload=dict(envelope.payload.get("payload", {})),
+        )
+        await routed.caller.send(ProtocolEnvelope.stream_event(
+            message_id=routed.caller_message_id,
+            method=routed.caller_method,
+            stream_id=routed.caller_stream_id,
+            event=event,
+        ))
+
+    async def _resolve_target(
+        self,
+        caller: HubConnection,
+        envelope: ProtocolEnvelope,
+    ) -> tuple[str, HubConnection, str, dict[str, Any]] | None:
+        target_peer_id = str(envelope.payload.get("targetPeerId", ""))
+        method = str(envelope.payload.get("method", ""))
+        payload_value = envelope.payload.get("payload", {})
+        payload = dict(payload_value) if isinstance(payload_value, dict) else {}
+        if not target_peer_id:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-target", "routed request requires targetPeerId"),
+            ))
+            return None
+        if not method:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-method", "routed request requires method"),
+            ))
+            return None
+        target_connection = self.connections.get(target_peer_id)
+        if target_connection is None:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("peer-offline", f"target peer is not connected: {target_peer_id}"),
+            ))
+            return None
+        return target_peer_id, target_connection, method, payload
+
+    async def _fail_target_routes(self, target: HubConnection, code: str, message: str) -> None:
+        for target_message_id, routed in list(self.routed_requests.items()):
+            if routed.target is not target:
+                continue
+            self.routed_requests.pop(target_message_id, None)
+            if routed.timeout_task is not None:
+                routed.timeout_task.cancel()
+            await routed.caller.send(ProtocolEnvelope.error_response(
+                message_id=routed.caller_message_id,
+                method=routed.caller_method,
+                error=ErrorInfo(code, message),
+            ))
+        for target_stream_id, routed in list(self.routed_streams_by_target.items()):
+            if routed.target is not target:
+                continue
+            self.routed_streams_by_target.pop(target_stream_id, None)
+            self.routed_streams_by_caller.pop(routed.caller_stream_id, None)
+            await routed.caller.send(ProtocolEnvelope.stream_event(
+                message_id=routed.caller_message_id,
+                method=routed.caller_method,
+                stream_id=routed.caller_stream_id,
+                event=StreamEvent(
+                    stream_id=routed.caller_stream_id,
+                    seq=0,
+                    event="error",
+                    payload={"code": code, "message": message},
+                ),
+            ))
+
+    def _remove_caller_routes(self, caller: HubConnection) -> None:
+        for target_stream_id, routed in list(self.routed_streams_by_target.items()):
+            if routed.caller is not caller:
+                continue
+            self.routed_streams_by_target.pop(target_stream_id, None)
+            self.routed_streams_by_caller.pop(routed.caller_stream_id, None)
+        for target_message_id, routed in list(self.routed_requests.items()):
+            if routed.caller is caller:
+                self.routed_requests.pop(target_message_id, None)
+                if routed.timeout_task is not None:
+                    routed.timeout_task.cancel()
+
+    def _next_relay_message_id(self) -> str:
+        self._relay_index += 1
+        return f"relay-m{self._relay_index:06d}"
+
+    def _next_relay_stream_id(self) -> str:
+        self._relay_index += 1
+        return f"relay-s{self._relay_index:06d}"
+
+    async def _expire_routed_request(self, target_message_id: str) -> None:
+        try:
+            await asyncio.sleep(self.route_request_timeout_seconds)
+        except asyncio.CancelledError:
+            raise
+        routed = self.routed_requests.pop(target_message_id, None)
+        if routed is None:
+            return
+        await routed.caller.send(ProtocolEnvelope.error_response(
+            message_id=routed.caller_message_id,
+            method=routed.caller_method,
+            error=ErrorInfo("target-timeout", "target peer did not respond before timeout"),
+        ))
