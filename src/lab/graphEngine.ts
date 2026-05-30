@@ -1,8 +1,7 @@
 import { BaseTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
 import { GRAPH_NODES } from './grips';
-import { dependencyEdges } from './fakeData';
-import type { GraphRenderNode, RepoStatus } from './types';
+import type { DependencyEdge, GraphRenderNode, RepoStatus } from './types';
 
 // Force-directed graph simulation kept entirely outside React. The component is
 // pure: it reads GRAPH_NODES (published by GraphSimTap) and calls engine methods
@@ -32,7 +31,7 @@ function statusColor(r: RepoStatus): string {
 }
 
 let nodes: PNode[] = [];
-let links: { source: string; target: string }[] = [];
+let links: DependencyEdge[] = [];
 let repoKey = '';
 let hover: string | null = null;
 let dragId: string | null = null;
@@ -43,7 +42,7 @@ let publishFn: ((n: GraphRenderNode[]) => void) | null = null;
 let raf = 0;
 let running = false;
 
-function build(repos: RepoStatus[]) {
+function build(repos: RepoStatus[], edges: DependencyEdge[]) {
   nodes = repos.map((r, i) => {
     const a = (i / Math.max(1, repos.length)) * Math.PI * 2;
     return {
@@ -54,8 +53,7 @@ function build(repos: RepoStatus[]) {
       width: 168, height: 66, baseW: 168, baseH: 66, expW: 250, expH: 168,
     };
   });
-  // Edges are the (cached) dependency hierarchy, not filesystem containment.
-  links = dependencyEdges(repos.map((r) => r.path));
+  links = edges;
 }
 
 function isExpanded(id: string) {
@@ -157,9 +155,11 @@ function wake() {
 }
 
 export const graphEngine = {
-  setInput(repos: RepoStatus[]) {
-    const key = repos.map((r) => `${r.path}:${r.head}:${r.dirty}:${r.ahead}:${r.behind}`).join('|');
-    if (key !== repoKey) { repoKey = key; build(repos); publishFn?.(snapshot()); wake(); }
+  setInput(repos: RepoStatus[], edges: DependencyEdge[]) {
+    const repoPart = repos.map((r) => `${r.path}:${r.head}:${r.dirty}:${r.ahead}:${r.behind}`).join('|');
+    const edgePart = edges.map((e) => `${e.source}->${e.target}`).join('|');
+    const key = `${repoPart}::${edgePart}`;
+    if (key !== repoKey) { repoKey = key; build(repos, edges); publishFn?.(snapshot()); wake(); }
   },
   attach(fn: (n: GraphRenderNode[]) => void) { publishFn = fn; fn(snapshot()); wake(); },
   detach() { publishFn = null; if (raf) cancelAnimationFrame(raf); running = false; },

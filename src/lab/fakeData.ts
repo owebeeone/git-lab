@@ -1,4 +1,5 @@
 import type {
+  DependencyEdge,
   Peer,
   RepoStatus,
   FileImage,
@@ -264,10 +265,10 @@ export const DEPENDENCIES: Record<string, string[]> = {
 };
 
 // Build dependency edges (source depends on target) among the present repos.
-export function dependencyEdges(repoPaths: string[]): { source: string; target: string }[] {
+export function dependencyEdges(repoPaths: string[]): DependencyEdge[] {
   const present = new Set(repoPaths);
   const idOf = (p: string) => p || 'root';
-  const edges: { source: string; target: string }[] = [];
+  const edges: DependencyEdge[] = [];
   for (const p of repoPaths) {
     for (const dep of DEPENDENCIES[p] ?? []) {
       if (present.has(dep)) edges.push({ source: idOf(p), target: idOf(dep) });

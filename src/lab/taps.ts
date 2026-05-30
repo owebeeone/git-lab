@@ -1,4 +1,4 @@
-import { createAtomValueTap } from '@owebeeone/grip-react';
+import { createAtomValueTap, createFunctionTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
 import {
   CURRENT_VIEW, CURRENT_VIEW_TAP,
@@ -38,10 +38,14 @@ import {
   RUN_REPOS_OPEN, RUN_REPOS_OPEN_TAP,
   PURGE_DAYS, PURGE_DAYS_TAP,
   RUN_DIALOG_OPEN, RUN_DIALOG_OPEN_TAP,
+  WORKSPACE_DEP_EDGES,
+  WORKSPACE_REPOS,
 } from './grips';
 import { registerGraphSimTap } from './graphEngine';
 import { registerFileContentTap } from './fileContentTap';
 import { registerSessionOutputTap } from './sessionOutputTap';
+import { dependencyEdges, REPO_STATUS_BY_PEER } from './fakeData';
+import type { RepoStatus } from './types';
 
 // All mock state is held in simple settable atom taps. When the backend lands,
 // these get replaced by taps that subscribe to the delta protocol; the
@@ -88,6 +92,7 @@ export function registerLabUiTaps() {
 
 export function registerLabMockTaps() {
   registerLabUiTaps();
+  registerMockWorkspaceTaps();
   registerGraphSimTap();
   registerFileContentTap();
   registerSessionOutputTap();
@@ -95,4 +100,28 @@ export function registerLabMockTaps() {
 
 export function registerLabTaps() {
   registerLabMockTaps();
+}
+
+function registerMockWorkspaceTaps() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  grok.registerTap(createFunctionTap<any, any, any, any>({
+    provides: [WORKSPACE_REPOS],
+    homeParamGrips: [SELECTED_PEER_ID],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    compute: ({ getHomeParam }: any) => {
+      const peerId = getHomeParam(SELECTED_PEER_ID) ?? '';
+      return new Map([[WORKSPACE_REPOS, REPO_STATUS_BY_PEER[peerId] ?? []]]);
+    },
+  }) as unknown as Tap);
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  grok.registerTap(createFunctionTap<any, any, any, any>({
+    provides: [WORKSPACE_DEP_EDGES],
+    homeParamGrips: [WORKSPACE_REPOS],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    compute: ({ getHomeParam }: any) => {
+      const repos = (getHomeParam(WORKSPACE_REPOS) ?? []) as RepoStatus[];
+      return new Map([[WORKSPACE_DEP_EDGES, dependencyEdges(repos.map((repo) => repo.path))]]);
+    },
+  }) as unknown as Tap);
 }

@@ -4,6 +4,7 @@ import type {
   ViewId, Peer, ChatMessage, DiffEndpoint, ThemeId,
   ChatLink, FileRef, OnboardingForm, ComposerDrag, ResizeDrag, GraphRenderNode, EditorGroup,
   CommandSession, SessionFilterMod, SessionDiagnostics, CollabEdit,
+  RepoStatus, DependencyEdge,
 } from './types';
 import { INITIAL_PEERS, INITIAL_CHAT, SELF_ID, COMMAND_SESSIONS } from './fakeData';
 
@@ -101,6 +102,8 @@ export const AVATAR_EDIT = defineGrip<string | null>('Lab.AvatarEdit', null);
 export const AVATAR_EDIT_TAP = defineGrip<AtomTapHandle<string | null>>('Lab.AvatarEdit.Tap');
 
 // Workspace graph nodes (published by the GraphSim tap engine)
+export const WORKSPACE_REPOS = defineGrip<RepoStatus[]>('Lab.WorkspaceRepos', []);
+export const WORKSPACE_DEP_EDGES = defineGrip<DependencyEdge[]>('Lab.WorkspaceDependencyEdges', []);
 export const GRAPH_NODES = defineGrip<GraphRenderNode[]>('Lab.GraphNodes', []);
 
 // Command sessions (project_viewer-style runs)

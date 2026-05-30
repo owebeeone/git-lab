@@ -107,6 +107,12 @@ export interface RepoStatus {
   changedFiles: ChangedFile[];
 }
 
+export interface DependencyEdge {
+  // source depends on target
+  source: string;
+  target: string;
+}
+
 // A monitored file as seen through the (future) delta protocol: a live image of
 // contents plus its git status. In the mock this is just static data.
 export interface FileImage {

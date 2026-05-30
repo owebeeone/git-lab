@@ -7,8 +7,8 @@ import {
   WORKSPACE_LAYOUT_TAP,
   WORKSPACE_MENU,
   WORKSPACE_MENU_TAP,
+  WORKSPACE_REPOS,
 } from '../grips';
-import { REPO_STATUS_BY_PEER } from '../fakeData';
 import type { Peer, RepoStatus } from '../types';
 import { dragProps, fileLink } from '../dnd';
 import { useEditor } from '../useEditor';
@@ -80,7 +80,7 @@ export default function WorkspaceStatusView() {
   const peerId = useGrip(SELECTED_PEER_ID) ?? '';
   const peers = useGrip(PEERS) ?? [];
   const peer = peers.find((p) => p.id === peerId);
-  const repos = REPO_STATUS_BY_PEER[peerId] ?? [];
+  const repos = useGrip(WORKSPACE_REPOS) ?? [];
   const layout = useGrip(WORKSPACE_LAYOUT) ?? 'tiles';
   const layoutTap = useGrip(WORKSPACE_LAYOUT_TAP);
 

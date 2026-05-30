@@ -1,7 +1,6 @@
 import { useGrip } from '@owebeeone/grip-react';
-import { GRAPH_NODES } from '../grips';
+import { GRAPH_NODES, WORKSPACE_DEP_EDGES } from '../grips';
 import { dragProps, fileLink } from '../dnd';
-import { dependencyEdges } from '../fakeData';
 import { graphEngine, VBW, VBH } from '../graphEngine';
 import { useEditor } from '../useEditor';
 import PeerSelect from './PeerSelect';
@@ -22,13 +21,14 @@ function boundaryIntersection(from: GraphRenderNode, to: GraphRenderNode) {
 export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[]; peer?: Peer }) {
   const { openInFiles } = useEditor();
   const nodes = useGrip(GRAPH_NODES) ?? [];
+  const depEdges = useGrip(WORKSPACE_DEP_EDGES) ?? [];
 
   // Feed the latest repo set to the engine (idempotent; not React state).
-  graphEngine.setInput(repos);
+  graphEngine.setInput(repos, depEdges);
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
   // Dependency edges (source depends on target), arrow points to the dependency.
-  const edges = dependencyEdges(nodes.map((n) => n.repoPath))
+  const edges = depEdges
     .map((e) => {
       const s = byId.get(e.source);
       const t = byId.get(e.target);
