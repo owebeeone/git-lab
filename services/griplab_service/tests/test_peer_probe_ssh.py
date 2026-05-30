@@ -15,6 +15,8 @@ from griplab_service.ssh_bootstrap import (
     diagnose_peer,
     prepare_remote_client,
     parse_ssh_target,
+    remote_client_config_path,
+    remote_config_dir,
     remote_start_command,
     scp_base_command,
     ssh_base_command,
@@ -78,6 +80,20 @@ def test_ssh_commands_pin_identity_when_configured() -> None:
     assert ssh_command[ssh_command.index("-i") + 1] == "id_ed25519"
     assert "IdentitiesOnly=yes" in scp_command
     assert scp_command[scp_command.index("-i") + 1] == "id_ed25519"
+
+
+def test_remote_config_defaults_under_workspace_location() -> None:
+    payload = {"location": "workspace-root"}
+
+    assert remote_config_dir(payload) == "workspace-root/.griplab"
+    assert remote_client_config_path(payload) == "workspace-root/.griplab/client.json"
+
+
+def test_remote_config_honors_explicit_config_dir() -> None:
+    payload = {"location": "workspace-root", "remoteConfigDir": "runtime/griplab"}
+
+    assert remote_config_dir(payload) == "runtime/griplab"
+    assert remote_client_config_path(payload) == "runtime/griplab/client.json"
 
 
 def test_start_command_wraps_dual_forwards_and_logs() -> None:
@@ -157,7 +173,6 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
             "location": str(peer.workspace_root),
             "identityFile": str(peer.identity_file),
             "knownHostsFile": str(peer.known_hosts_file),
-            "remoteConfigDir": str(peer.workspace_root / ".remote-griplab"),
             "remoteHubPort": 43141,
             "remoteClientPort": 3142,
         }
@@ -174,9 +189,9 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
 
         assert result["ok"] is True
         assert result["forward"]["remoteHubPort"] == 43141
-        client = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.remote-griplab' / 'client.json')}")
-        forward = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.remote-griplab' / 'forward.json')}")
-        payload_file = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.remote-griplab' / 'client_payload.json')}")
+        client = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'client.json')}")
+        forward = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'forward.json')}")
+        payload_file = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'client_payload.json')}")
         assert client.returncode == 0
         assert '"selfPeerId": "fixture"' in client.stdout
         assert '"url": "ws://127.0.0.1:43141/ws"' in client.stdout
@@ -184,6 +199,40 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
         assert '"remoteClientPort": 3142' in forward.stdout
         assert payload_file.returncode == 0
         assert "griplab-client-placeholder" in payload_file.stdout
+
+
+def test_prepare_remote_client_creates_missing_workspace_config_dir(tmp_path) -> None:
+    try:
+        env = SshTestEnvironment(tmp_path / "ssh-fixture")
+    except SshTestEnvError as exc:
+        pytest.skip(str(exc))
+
+    with env as peer:
+        missing_workspace = peer.workspace_root / "created-by-bootstrap"
+        payload = {
+            "peerId": "fixture",
+            "sshAddress": f"{peer.user}@{peer.host}:{peer.port}",
+            "location": str(missing_workspace),
+            "identityFile": str(peer.identity_file),
+            "knownHostsFile": str(peer.known_hosts_file),
+            "remoteHubPort": 43141,
+            "remoteClientPort": 3142,
+        }
+        diagnostics = diagnose_peer(payload)
+        missing = [
+            name
+            for name in ("python", "uv", "git", "node")
+            if not diagnostics.get(name, {}).get("ok", False)  # type: ignore[union-attr]
+        ]
+        if missing:
+            pytest.skip(f"remote fixture missing required tools: {', '.join(missing)}")
+
+        result = prepare_remote_client(payload, hub_port=3140)
+
+        assert result["ok"] is True
+        client = env.run_ssh(f"cat {shell_quote(missing_workspace / '.griplab' / 'client.json')}")
+        assert client.returncode == 0
+        assert '"root":' in client.stdout
 
 
 def test_peer_bootstrap_starts_ephemeral_forwarded_process(tmp_path) -> None:

@@ -210,7 +210,7 @@ class HubBootstrapWorker:
             "remoteHubPort": int(forward.get("remoteHubPort", payload.get("remoteHubPort", 43140))),
             "hubHost": self.hub_host,
             "hubPort": self.hub_port,
-            "remoteCommand": str(payload.get("remoteCommand", default_remote_client_command())),
+            "remoteCommand": str(payload.get("remoteCommand", default_remote_client_command(remote_client_config_path(payload)))),
         }
         start = self.processes.bootstrap(start_payload)
         self._log(peer_id, {"event": "start-result", "result": start})
@@ -315,7 +315,7 @@ def prepare_remote_client(
         diagnostics = diagnose_peer(payload, timeout=timeout)
         if not diagnostics.get("ok", False):
             return RemotePrepareResult(False, peer_id, diagnostics, plan.to_json(), str(diagnostics.get("error", ""))).to_json()
-        remote_home = str(payload.get("remoteConfigDir", "~/.griplab")) or "~/.griplab"
+        remote_home = remote_config_dir(payload)
         _run_ssh(payload, f"mkdir -p {shlex.quote(remote_home)} && chmod 700 {shlex.quote(remote_home)}", timeout=timeout)
         with secure_temp_dir() as temp_dir:
             client_json = remote_client_config(payload, plan)
@@ -584,8 +584,20 @@ def allocate_local_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def default_remote_client_command() -> str:
-    return "griplab client --config ~/.griplab/client.json"
+def remote_config_dir(payload: dict[str, Any]) -> str:
+    configured = str(payload.get("remoteConfigDir", "")).strip()
+    if configured:
+        return configured
+    location = str(payload.get("location", ".")).rstrip("/")
+    return f"{location}/.griplab" if location else ".griplab"
+
+
+def remote_client_config_path(payload: dict[str, Any]) -> str:
+    return f"{remote_config_dir(payload).rstrip('/')}/client.json"
+
+
+def default_remote_client_command(config_path: str = ".griplab/client.json") -> str:
+    return f"griplab client --config {shlex.quote(config_path)}"
 
 
 def normalize_os(value: str) -> str:
