@@ -1,5 +1,6 @@
 import json
 import asyncio
+import base64
 from pathlib import Path
 from urllib.request import urlopen
 import subprocess
@@ -336,6 +337,39 @@ def test_file_window_update_routes_to_subscription(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_file_stream_sends_head_snapshot(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        (config.workspace.root / "README.md").write_text("working edit\n", encoding="utf-8")
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "file.subscribe",
+                        "streamId": "file0001",
+                        "payload": {
+                            "repoPath": "",
+                            "path": "README.md",
+                            "ref": "head",
+                            "window": {"lineStart": 0, "lineEnd": 10},
+                        },
+                    })
+                    snapshot = await ws.receive_json(timeout=2)
+                    assert snapshot["kind"] == "stream-event"
+                    assert snapshot["payload"]["event"] == "snapshot"
+                    payload = snapshot["payload"]["payload"]
+                    assert base64.b64decode(payload["data"].removeprefix("base64:")) == b"hello\n"
+                    assert payload["resourceId"] == "::README.md::head"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_file_stream_reports_unsupported_ref(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
@@ -352,7 +386,7 @@ def test_file_stream_reports_unsupported_ref(tmp_path: Path) -> None:
                         "payload": {
                             "repoPath": "",
                             "path": "README.md",
-                            "ref": "head",
+                            "ref": "commit",
                             "window": {"lineStart": 0, "lineEnd": 10},
                         },
                     })

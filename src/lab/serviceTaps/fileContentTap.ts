@@ -7,7 +7,9 @@ import {
   FILE_REF,
   FILE_STREAM_STATUS,
   FILE_WINDOW,
+  SELECTED_PEER_ID,
 } from '../grips';
+import { LAB_HUB_ROUTE } from '../dataMode';
 import { TextWindowReassembler, parseTextWindowDelta, parseTextWindowSnapshot } from '../serviceClient/filedelta/index.ts';
 import { defaultServiceClient, type ServiceClient } from '../serviceClient/client.ts';
 import type { ServiceStreamEvent } from '../serviceClient/protocol.ts';
@@ -32,24 +34,29 @@ export function createServiceFileContentTap(client: ServiceClient = defaultServi
   return createAsyncStreamMultiTap<FileOuts, ServiceStreamEvent>({
     provides: [FILE_CONTENT, FILE_GIT_STATUS, FILE_STREAM_STATUS, FILE_LINE_INDEX],
     destinationParamGrips: [ACTIVE_FILE, FILE_REF, FILE_WINDOW],
+    homeParamGrips: [SELECTED_PEER_ID],
     requestKeyOf: (params) => {
       const activeFile = params.getDestParam(ACTIVE_FILE) ?? '';
       if (!activeFile) return undefined;
       const ref = params.getDestParam(FILE_REF) ?? 'working';
       const window = params.getDestParam(FILE_WINDOW) ?? { lineStart: 0, lineEnd: 400 };
-      return fileRequestKey(params.destContext.id, activeFile, ref, window);
+      const peerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
+      return fileRequestKey(params.destContext.id, peerId, activeFile, ref, window);
     },
     subscribe: (params, signal) => {
       const activeFile = params.getDestParam(ACTIVE_FILE) ?? '';
       const ref = params.getDestParam(FILE_REF) ?? 'working';
       const window = params.getDestParam(FILE_WINDOW) ?? { lineStart: 0, lineEnd: 400 };
+      const peerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
       const file = splitFileKey(activeFile);
-      return client.subscribe('file.subscribe', {
+      const payload = {
         repoPath: file.repoPath,
         path: file.path,
         ref,
         window,
-      }, signal);
+      };
+      if (LAB_HUB_ROUTE) return client.routeSubscribe(peerId, 'file.subscribe', payload, signal);
+      return client.subscribe('file.subscribe', payload, signal);
     },
     mapEvent: (params, event) => mapFileEvent(params, event),
     getResetUpdates: () => statusUpdates('', { status: 'idle', error: null }, []),
@@ -69,7 +76,8 @@ function mapFileEvent(params: DestinationParams, event: ServiceStreamEvent) {
   const activeFile = params.getDestParam(ACTIVE_FILE) ?? '';
   const ref = params.getDestParam(FILE_REF) ?? 'working';
   const window = params.getDestParam(FILE_WINDOW) ?? { lineStart: 0, lineEnd: 400 };
-  const requestKey = fileRequestKey(params.destContext.id, activeFile, ref, window);
+  const peerId = params.getHomeParam(SELECTED_PEER_ID) ?? 'me';
+  const requestKey = fileRequestKey(params.destContext.id, peerId, activeFile, ref, window);
   const reassembler = getReassembler(requestKey);
 
   if (event.event === 'error') {
@@ -115,8 +123,8 @@ function getReassembler(requestKey: string): TextWindowReassembler {
   return reassembler;
 }
 
-function fileRequestKey(contextId: string, activeFile: string, ref: FileRef, window: LineWindow): string {
-  return `${contextId}|${activeFile}|${ref}|${window.lineStart}:${window.lineEnd}`;
+function fileRequestKey(contextId: string, peerId: string, activeFile: string, ref: FileRef, window: LineWindow): string {
+  return `${contextId}|${peerId}|${activeFile}|${ref}|${window.lineStart}:${window.lineEnd}`;
 }
 
 function splitFileKey(key: string): FileKey {

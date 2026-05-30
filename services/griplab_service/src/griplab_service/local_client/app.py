@@ -8,8 +8,10 @@ import json
 import os
 import re
 import signal
+import subprocess
 import struct
 import termios
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -447,6 +449,7 @@ class FileStream:
     task: asyncio.Task[None] | None = None
     watcher: "FileWatcher" | None = None
     queue: asyncio.Queue[None] | None = None
+    temp_path: Path | None = None
 
 
 @dataclass
@@ -561,9 +564,7 @@ class LocalClientConnection:
         self.file_streams[stream_id] = stream
         try:
             source = resolve_file_source(self.config.workspace.root, payload)
-            if source["ref"] != "working":
-                await self._send_file_error(stream, "unsupported-ref", "only working-tree file streams are available")
-                return
+            stream.temp_path = source.get("temp_path") if isinstance(source.get("temp_path"), Path) else None
             window = parse_line_window(payload)
             queue: asyncio.Queue[None] = asyncio.Queue()
             stream.queue = queue
@@ -572,12 +573,17 @@ class LocalClientConnection:
             stream.connection = connection
             await connection.open()
             stream.subscription = await connection.subscribe_window(subscriber, window)
-            watcher = FileWatcher(Path(source["path"]), asyncio.get_running_loop(), queue)
-            stream.watcher = watcher
-            watcher.start()
-            stream.task = asyncio.create_task(self._watch_file(stream))
+            if source["ref"] == "working":
+                watcher = FileWatcher(Path(source["path"]), asyncio.get_running_loop(), queue)
+                stream.watcher = watcher
+                watcher.start()
+                stream.task = asyncio.create_task(self._watch_file(stream))
         except Exception as exc:
-            await self._send_file_error(stream, "file-open-failed", str(exc))
+            if stream.temp_path is not None:
+                stream.temp_path.unlink(missing_ok=True)
+                stream.temp_path = None
+            code = "unsupported-ref" if str(exc).startswith("unsupported ref:") else "file-open-failed"
+            await self._send_file_error(stream, code, str(exc))
 
     async def update_file_window(self, stream_id: str, payload: dict[str, Any]) -> bool:
         stream = self.file_streams.get(stream_id)
@@ -726,6 +732,9 @@ class LocalClientConnection:
             stream.watcher.stop()
         if stream.connection is not None:
             await stream.connection.close(reason)
+        if stream.temp_path is not None:
+            stream.temp_path.unlink(missing_ok=True)
+            stream.temp_path = None
 
     async def _watch_sessions(self, stream: SessionsStream) -> None:
         try:
@@ -948,12 +957,40 @@ def resolve_file_source(workspace_root: Path, payload: dict[str, Any]) -> dict[s
     file_path = (repo_root / path).resolve()
     if not file_path.is_relative_to(repo_root):
         raise ValueError("path escapes repo root")
+    if ref == "head":
+        temp_path = materialize_head_file(repo_root, path)
+        return {
+            "resource_id": f"{repo_path}::{path}::{ref}",
+            "repo_path": repo_path,
+            "path": temp_path,
+            "ref": ref,
+            "temp_path": temp_path,
+        }
+    if ref != "working":
+        raise ValueError(f"unsupported ref: {ref}")
     return {
         "resource_id": f"{repo_path}::{path}::{ref}",
         "repo_path": repo_path,
         "path": file_path,
         "ref": ref,
     }
+
+
+def materialize_head_file(repo_root: Path, path: str) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"HEAD:{path}"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip() or f"HEAD does not contain {path}"
+        raise ValueError(message)
+    handle = tempfile.NamedTemporaryFile(prefix="griplab-head-", delete=False)
+    try:
+        handle.write(result.stdout)
+        return Path(handle.name)
+    finally:
+        handle.close()
 
 
 class FileChangeHandler(FileSystemEventHandler):
