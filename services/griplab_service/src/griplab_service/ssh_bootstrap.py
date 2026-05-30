@@ -94,13 +94,13 @@ class EphemeralBootstrapManager:
         hub_host = str(payload.get("hubHost", "127.0.0.1"))
         hub_port = int(payload.get("hubPort", 3140))
         location = str(payload.get("location", "."))
-        remote_command = str(payload.get("remoteCommand", default_remote_client_command()))
+        remote_command = str(payload.get("remoteCommand", default_remote_client_command(remote_client_config_path(payload))))
         try:
             target = parse_ssh_target(str(payload.get("sshAddress", "")))
             ssh_command = ssh_base_command(payload)
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
-        log_root = str(payload.get("remoteLogDir", "~/.griplab/logs"))
+        log_root = str(payload.get("remoteLogDir", remote_log_dir(payload)))
         log_stdout = f"{log_root}/{peer_id}.out"
         log_stderr = f"{log_root}/{peer_id}.err"
         command = remote_start_command(location, remote_command, log_root, log_stdout, log_stderr)
@@ -121,6 +121,7 @@ class EphemeralBootstrapManager:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+        time.sleep(0.25)
         if process.poll() is not None:
             return {
                 "ok": False,
@@ -211,6 +212,7 @@ class HubBootstrapWorker:
             "hubHost": self.hub_host,
             "hubPort": self.hub_port,
             "remoteCommand": str(payload.get("remoteCommand", default_remote_client_command(remote_client_config_path(payload)))),
+            "remoteLogDir": str(payload.get("remoteLogDir", remote_log_dir(payload))),
         }
         start = self.processes.bootstrap(start_payload)
         self._log(peer_id, {"event": "start-result", "result": start})
@@ -318,14 +320,18 @@ def prepare_remote_client(
         remote_home = remote_config_dir(payload)
         _run_ssh(payload, f"mkdir -p {shlex.quote(remote_home)} && chmod 700 {shlex.quote(remote_home)}", timeout=timeout)
         with secure_temp_dir() as temp_dir:
+            payload_root = temp_dir / "client_payload"
             client_json = remote_client_config(payload, plan)
             forward_json = plan.to_json()
             payload_json = selected_client_payload(diagnostics)
             write_json(temp_dir / "client.json", client_json)
             write_json(temp_dir / "forward.json", forward_json)
             write_json(temp_dir / "client_payload.json", payload_json)
+            build_local_client_payload(payload_root)
             for filename in ("client.json", "forward.json", "client_payload.json"):
                 _run_scp(payload, temp_dir / filename, f"{target.destination()}:{remote_home}/{filename}", timeout=timeout)
+            _run_ssh(payload, f"rm -rf {shlex.quote(remote_client_payload_dir(payload))}", timeout=timeout)
+            _run_scp_recursive(payload, payload_root, f"{target.destination()}:{remote_home}/", timeout=timeout)
         return RemotePrepareResult(True, peer_id, diagnostics, plan.to_json()).to_json()
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         forward = plan.to_json() if "plan" in locals() else {}
@@ -346,7 +352,7 @@ def diagnose_peer(payload: dict[str, Any], *, timeout: float = 8) -> dict[str, o
 
 
 def shell_fingerprint_command() -> str:
-    return 'echo "Linux: $SHELL | Win: %SHELL% / $env:SHELL"'
+    return 'printf "Linux: %s | Win: %%SHELL%% / \\$env:SHELL\\n" "$SHELL"'
 
 
 def classify_shell_fingerprint(output: str) -> str:
@@ -592,12 +598,59 @@ def remote_config_dir(payload: dict[str, Any]) -> str:
     return f"{location}/.griplab" if location else ".griplab"
 
 
+def remote_log_dir(payload: dict[str, Any]) -> str:
+    return f"{remote_config_dir(payload).rstrip('/')}/logs"
+
+
+def remote_client_payload_dir(payload: dict[str, Any]) -> str:
+    return f"{remote_config_dir(payload).rstrip('/')}/client_payload"
+
+
 def remote_client_config_path(payload: dict[str, Any]) -> str:
     return f"{remote_config_dir(payload).rstrip('/')}/client.json"
 
 
 def default_remote_client_command(config_path: str = ".griplab/client.json") -> str:
-    return f"griplab client --config {shlex.quote(config_path)}"
+    payload_dir = f"{Path(config_path).parent}/client_payload" if not config_path.startswith("/") else f"{str(Path(config_path).parent)}/client_payload"
+    return " ".join([
+        "cd",
+        shlex.quote(payload_dir),
+        "&&",
+        "uv",
+        "run",
+        "--with-editable",
+        "services/filedelta",
+        "--with-editable",
+        "services/diffstream",
+        "--with-editable",
+        "services/griplab_service",
+        "griplab",
+        "client",
+        "--config",
+        shlex.quote(config_path),
+    ])
+
+
+def build_local_client_payload(destination: Path) -> None:
+    services_root = local_griplab_root() / "services"
+    payload_services = destination / "services"
+    payload_services.mkdir(parents=True, exist_ok=True)
+    for name in ("filedelta", "diffstream", "griplab_service"):
+        shutil.copytree(
+            services_root / name,
+            payload_services / name,
+            ignore=shutil.ignore_patterns(
+                ".pytest_cache",
+                "__pycache__",
+                "*.pyc",
+                "*.pyo",
+                "*.egg-info",
+            ),
+        )
+
+
+def local_griplab_root() -> Path:
+    return Path(__file__).resolve().parents[4]
 
 
 def normalize_os(value: str) -> str:
@@ -641,6 +694,19 @@ def _run_ssh(payload: dict[str, Any], remote_command: str, *, timeout: float) ->
 def _run_scp(payload: dict[str, Any], source: Path, destination: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
         [*scp_base_command(payload), str(source), destination],
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise subprocess.SubprocessError(result.stderr.strip() or result.stdout.strip() or f"scp exited {result.returncode}")
+    return result
+
+
+def _run_scp_recursive(payload: dict[str, Any], source: Path, destination: str, *, timeout: float) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(
+        [*scp_base_command(payload), "-r", str(source), destination],
         text=True,
         capture_output=True,
         timeout=timeout,

@@ -16,7 +16,9 @@ from griplab_service.ssh_bootstrap import (
     prepare_remote_client,
     parse_ssh_target,
     remote_client_config_path,
+    remote_client_payload_dir,
     remote_config_dir,
+    remote_log_dir,
     remote_start_command,
     scp_base_command,
     ssh_base_command,
@@ -87,6 +89,8 @@ def test_remote_config_defaults_under_workspace_location() -> None:
 
     assert remote_config_dir(payload) == "workspace-root/.griplab"
     assert remote_client_config_path(payload) == "workspace-root/.griplab/client.json"
+    assert remote_client_payload_dir(payload) == "workspace-root/.griplab/client_payload"
+    assert remote_log_dir(payload) == "workspace-root/.griplab/logs"
 
 
 def test_remote_config_honors_explicit_config_dir() -> None:
@@ -192,6 +196,7 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
         client = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'client.json')}")
         forward = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'forward.json')}")
         payload_file = env.run_ssh(f"cat {shell_quote(peer.workspace_root / '.griplab' / 'client_payload.json')}")
+        payload_dir = env.run_ssh(f"test -f {shell_quote(peer.workspace_root / '.griplab' / 'client_payload' / 'services' / 'griplab_service' / 'pyproject.toml')}")
         assert client.returncode == 0
         assert '"selfPeerId": "fixture"' in client.stdout
         assert '"url": "ws://127.0.0.1:43141/ws"' in client.stdout
@@ -199,6 +204,7 @@ def test_prepare_remote_client_copies_config_over_fixture_sshd(tmp_path) -> None
         assert '"remoteClientPort": 3142' in forward.stdout
         assert payload_file.returncode == 0
         assert "griplab-client-placeholder" in payload_file.stdout
+        assert payload_dir.returncode == 0
 
 
 def test_prepare_remote_client_creates_missing_workspace_config_dir(tmp_path) -> None:
