@@ -298,6 +298,13 @@ async def handle_protocol_message(
             payload={"sessionId": session_id},
         ))
         return
+    if envelope.method == "sessions.query":
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload=connection.session_manager.query(envelope.payload),
+        ))
+        return
     await connection.send(ProtocolEnvelope.error_response(
         message_id=envelope.message_id,
         method=envelope.method,
@@ -910,6 +917,42 @@ class SessionManager:
             "exitCode": target.exit_code if target else None,
         }
 
+    def query(self, payload: dict[str, Any]) -> dict[str, object]:
+        text = str(payload.get("text", "")).strip().lower()
+        peers = set(str(item) for item in payload.get("peers", []) if item)
+        repos = set(str(item) for item in payload.get("repos", []) if item is not None)
+        statuses = set(str(item) for item in payload.get("status", []) if item)
+        include_hidden = bool(payload.get("includeHidden", False))
+        limit = max(1, min(500, int(payload.get("limit", 100))))
+
+        matches: list[dict[str, object]] = []
+        for session in self.sessions:
+            if session.hidden and not include_hidden:
+                continue
+            if peers and session.peer_id not in peers:
+                continue
+            status = session_status(session)
+            if statuses and status not in statuses:
+                continue
+            if repos and not any(target.repo_path in repos for target in session.targets):
+                continue
+            haystack = " ".join(session.argv).lower() + "\n" + "\n".join(target.output.lower() for target in session.targets)
+            if text and text not in haystack:
+                continue
+            matches.append({
+                "session": session_to_json(session),
+                "status": status,
+                "matchedTargets": [
+                    target.repo_path
+                    for target in session.targets
+                    if (not repos or target.repo_path in repos)
+                    and (not text or text in target.output.lower() or text in " ".join(session.argv).lower())
+                ],
+            })
+            if len(matches) >= limit:
+                break
+        return {"matches": matches}
+
     async def _run_target(self, session: CommandSessionState, target: RepoRunState) -> None:
         start = time.monotonic()
         self._append_event(session.id, {
@@ -1051,6 +1094,15 @@ def session_to_metadata_json(session: CommandSessionState) -> dict[str, object]:
             for target in session.targets
         ],
     }
+
+
+def session_status(session: CommandSessionState) -> str:
+    exit_codes = [target.exit_code for target in session.targets]
+    if any(code is None for code in exit_codes):
+        return "running"
+    if any(code != 0 for code in exit_codes):
+        return "error"
+    return "ok"
 
 
 def load_sessions(root: Path) -> list[CommandSessionState]:

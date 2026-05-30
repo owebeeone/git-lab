@@ -481,6 +481,86 @@ def test_command_sessions_reconstruct_after_restart(tmp_path: Path) -> None:
     asyncio.run(verify_restart(restored_session_id))
 
 
+def test_sessions_query_filters_by_text_status_peer_and_repo(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        (config.workspace.root / "subrepo").mkdir()
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "cmd.run",
+                        "payload": {
+                            "argv": ["python", "-c", "print('query-target')"],
+                            "repos": [""],
+                            "peerId": "me",
+                        },
+                    })
+                    ok_response = await ws.receive_json(timeout=2)
+                    ok_session_id = ok_response["payload"]["sessionId"]
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "cmd.run",
+                        "payload": {
+                            "argv": ["python", "-c", "import sys; print('query-fail'); sys.exit(3)"],
+                            "repos": ["subrepo"],
+                            "peerId": "me",
+                        },
+                    })
+                    fail_response = await ws.receive_json(timeout=2)
+                    fail_session_id = fail_response["payload"]["sessionId"]
+
+                    await wait_for_query_session(ws, ok_session_id)
+                    await wait_for_query_session(ws, fail_session_id)
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "sessions.query",
+                        "payload": {"text": "query-target", "status": ["ok"], "peers": ["me"], "limit": 10},
+                    })
+                    text_query = await ws.receive_json(timeout=2)
+                    matches = text_query["payload"]["matches"]
+                    assert [item["session"]["id"] for item in matches] == [ok_session_id]
+
+                    await ws.send_json({
+                        "messageId": "m000004",
+                        "kind": "request",
+                        "method": "sessions.query",
+                        "payload": {"status": ["error"], "repos": ["subrepo"], "limit": 10},
+                    })
+                    error_query = await ws.receive_json(timeout=2)
+                    matches = error_query["payload"]["matches"]
+                    assert [item["session"]["id"] for item in matches] == [fail_session_id]
+                    assert matches[0]["status"] == "error"
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+async def wait_for_query_session(ws, session_id: str) -> None:
+    for index in range(20):
+        await ws.send_json({
+            "messageId": f"q{index:06d}",
+            "kind": "request",
+            "method": "sessions.query",
+            "payload": {"limit": 100},
+        })
+        response = await ws.receive_json(timeout=2)
+        for item in response["payload"]["matches"]:
+            if item["session"]["id"] == session_id and item["status"] != "running":
+                return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"session did not finish: {session_id}")
+
+
 def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=100))
