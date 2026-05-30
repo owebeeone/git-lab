@@ -58,12 +58,14 @@ export default function FileExplorer({
   const selectedPeerId = useGrip(SELECTED_PEER_ID) ?? '';
   const treeStatus = useGrip(WORKSPACE_TREE_STATUS) ?? { peerId: '', status: 'idle' as const, error: null };
   const rawTree = useGrip(WORKSPACE_TREE) ?? [];
-  const treeReadyForPeer = treeStatus.status === 'ready' && treeStatus.peerId === selectedPeerId;
-  const loadingTree = treeStatus.peerId === selectedPeerId && treeStatus.status === 'loading';
+  const statusMatchesPeer = treeStatus.peerId === selectedPeerId;
+  const initialSnapshotReady = treeStatus.status === 'idle' && rawTree.length > 0;
+  const treeReadyForPeer = (statusMatchesPeer && treeStatus.status === 'ready') || initialSnapshotReady;
+  const loadingTree = statusMatchesPeer && treeStatus.status === 'loading';
   const tree = buildTree(treeReadyForPeer ? rawTree : []);
-  const collapsedList = useGrip(EXPLORER_COLLAPSED) ?? [];
+  const collapsedToggleList = useGrip(EXPLORER_COLLAPSED) ?? [];
   const collapsedTap = useGrip(EXPLORER_COLLAPSED_TAP);
-  const collapsed = new Set(collapsedList);
+  const collapsedToggles = new Set(collapsedToggleList);
 
   const open = useGrip(EXPLORER_OPEN) ?? true;
   const openTap = useGrip(EXPLORER_OPEN_TAP);
@@ -73,7 +75,18 @@ export default function FileExplorer({
   const dragTap = useGrip(EXPLORER_DRAG_TAP);
 
   const toggle = (id: string) => {
-    collapsedTap?.set(collapsed.has(id) ? collapsedList.filter((x) => x !== id) : [...collapsedList, id]);
+    collapsedTap?.set(
+      collapsedToggles.has(id)
+        ? collapsedToggleList.filter((x) => x !== id)
+        : [...collapsedToggleList, id],
+    );
+  };
+
+  const defaultOpen = (node: TNode, depth: number) => depth === 0 && node.name === 'root';
+
+  const isNodeOpen = (node: TNode, depth: number, id: string) => {
+    const openByDefault = defaultOpen(node, depth);
+    return collapsedToggles.has(id) ? !openByDefault : openByDefault;
   };
 
   const renderNode = (node: TNode, depth: number, idPath: string) => {
@@ -94,7 +107,7 @@ export default function FileExplorer({
         </button>
       );
     }
-    const isOpen = !collapsed.has(id);
+    const isOpen = isNodeOpen(node, depth, id);
     const kids = [...node.children.values()].sort((a, b) => {
       if (a.kind !== b.kind) return a.kind === 'dir' ? -1 : 1;
       return a.name.localeCompare(b.name);
