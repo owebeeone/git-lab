@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from aiohttp import ClientSession, WSCloseCode
+from filedelta import LineWindow, make_text_window_snapshot, text_window_snapshot_to_json
 
 from griplab_service.config import load_config
 from griplab_service.hub import HubServer
@@ -360,6 +361,125 @@ def test_hub_routed_request_times_out(tmp_path: Path, monkeypatch) -> None:
     asyncio.run(run())
 
 
+def test_hub_diff_subscribe_routes_file_streams_and_publishes_diff(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    left = await session.ws_connect(server.ws_url)
+                    right = await session.ws_connect(server.ws_url)
+                    await hello_peer(left, "left")
+                    await hello_peer(right, "right")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "diff.subscribe",
+                        "streamId": "diff-stream",
+                        "payload": {
+                            "left": {
+                                "peerId": "left",
+                                "repoPath": "",
+                                "path": "src/app.ts",
+                                "ref": {"kind": "working"},
+                            },
+                            "right": {
+                                "peerId": "right",
+                                "repoPath": "",
+                                "path": "src/app.ts",
+                                "ref": {"kind": "working"},
+                            },
+                            "window": {"lineStart": 0, "lineEnd": 5},
+                            "contextLines": 1,
+                        },
+                    })
+                    left_request = await left.receive_json(timeout=2)
+                    right_request = await right.receive_json(timeout=2)
+                    assert left_request["method"] == "file.subscribe"
+                    assert right_request["method"] == "file.subscribe"
+                    assert left_request["payload"]["window"] == {"lineStart": 0, "lineEnd": 6}
+                    assert right_request["payload"]["window"] == {"lineStart": 0, "lineEnd": 6}
+
+                    await send_file_snapshot(left, left_request, "left", b"a\nold\nc\n", "fv000001")
+                    await send_file_snapshot(right, right_request, "right", b"a\nnew\nc\n", "fv000002")
+
+                    event = await caller.receive_json(timeout=2)
+                    payload = event["payload"]["payload"]
+                    assert event["kind"] == "stream-event"
+                    assert event["method"] == "diff.subscribe"
+                    assert event["streamId"] == "diff-stream"
+                    assert payload["contentType"] == "application/vnd.griplab.diff+json;version=1"
+                    assert payload["left"]["peerId"] == "left"
+                    assert payload["right"]["peerId"] == "right"
+                    assert payload["hunks"][0]["lines"][1]["kind"] == "change"
+
+                    await caller.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "diff.unsubscribe",
+                        "payload": {"streamId": "diff-stream"},
+                    })
+                    response = await caller.receive_json(timeout=2)
+                    assert response["payload"] == {"stopped": True}
+                    assert (await left.receive_json(timeout=2))["method"] == "file.unsubscribe"
+                    assert (await right.receive_json(timeout=2))["method"] == "file.unsubscribe"
+                    await left.close()
+                    await right.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
+def test_hub_diff_source_error_publishes_diagnostic(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_hub_config(tmp_path))
+        server = HubServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as caller:
+                    left = await session.ws_connect(server.ws_url)
+                    await hello_peer(left, "left")
+
+                    await caller.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "diff.subscribe",
+                        "streamId": "diff-stream",
+                        "payload": {
+                            "left": {
+                                "peerId": "left",
+                                "repoPath": "",
+                                "path": "src/app.ts",
+                                "ref": {"kind": "working"},
+                            },
+                            "right": {
+                                "peerId": "missing",
+                                "repoPath": "",
+                                "path": "src/app.ts",
+                                "ref": {"kind": "working"},
+                            },
+                            "window": {"lineStart": 0, "lineEnd": 5},
+                            "contextLines": 1,
+                        },
+                    })
+
+                    event = await caller.receive_json(timeout=2)
+                    payload = event["payload"]["payload"]
+                    assert payload["diagnostics"][0]["code"] == "peer-offline"
+                    assert payload["diagnostics"][0]["endpoint"] == "right"
+
+                    await left.close()
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 async def hello_peer(ws: object, peer_id: str) -> None:
     await ws.send_json({
         "messageId": f"hello-{peer_id}",
@@ -370,3 +490,26 @@ async def hello_peer(ws: object, peer_id: str) -> None:
     response = await ws.receive_json(timeout=2)
     assert response["kind"] == "response"
     assert response["payload"] == {"peerId": peer_id}
+
+
+async def send_file_snapshot(ws: object, routed_request: dict, resource_id: str, data: bytes, file_version: str) -> None:
+    snapshot = make_text_window_snapshot(
+        resource_id=resource_id,
+        window_id=f"{resource_id}:window",
+        data=data,
+        window=LineWindow(0, 20),
+        file_version=file_version,
+        window_version="wv000001",
+    )
+    await ws.send_json({
+        "messageId": routed_request["messageId"],
+        "kind": "stream-event",
+        "method": "file.subscribe",
+        "streamId": routed_request["streamId"],
+        "payload": {
+            "streamId": routed_request["streamId"],
+            "seq": 1,
+            "event": "snapshot",
+            "payload": text_window_snapshot_to_json(snapshot),
+        },
+    })

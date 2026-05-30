@@ -10,6 +10,27 @@ from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import WSMsgType, web
+from diffstream import (
+    DiffDiagnostic,
+    DiffEndpoint,
+    DiffPayload,
+    DiffSourceState,
+    DiffWindow,
+    build_diff_payload,
+    effective_window,
+    endpoint_from_json,
+    format_diff_id,
+    format_diff_version,
+    payload_to_json,
+    window_from_json,
+)
+from filedelta import (
+    TextWindowSnapshot,
+    apply_text_window_delta,
+    reset_from_json,
+    text_window_delta_from_json,
+    text_window_snapshot_from_json,
+)
 
 from griplab_service.chat_store import ChatStore, chat_store_root
 from griplab_service.config import ServiceConfig
@@ -185,6 +206,33 @@ async def handle_protocol_message(connection: "HubConnection", envelope: Protoco
             return
         await connection.subscribe_chat(envelope.message_id, envelope.stream_id)
         return
+    if envelope.method == "diff.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "diff.subscribe requires streamId"),
+            ))
+            return
+        await connection.registry.open_diff_stream(connection, envelope.message_id, envelope.stream_id, envelope.payload)
+        return
+    if envelope.method == "diff.window.update":
+        updated = await connection.registry.update_diff_window(connection, envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"updated": updated},
+        ))
+        return
+    if envelope.method == "diff.unsubscribe":
+        stream_id = str(envelope.payload.get("streamId", ""))
+        stopped = await connection.registry.close_diff_stream(connection, stream_id)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"stopped": stopped},
+        ))
+        return
     if envelope.method == "hub.route.request":
         await connection.registry.route_request(connection, envelope)
         return
@@ -254,6 +302,26 @@ class RoutedStream:
     target_stream_id: str
 
 
+@dataclass
+class HubDiffStream:
+    caller: "HubConnection"
+    message_id: str
+    stream_id: str
+    diff_id: str
+    left: DiffEndpoint
+    right: DiffEndpoint
+    window: DiffWindow
+    context_lines: int
+    left_target: "HubConnection | None" = None
+    right_target: "HubConnection | None" = None
+    left_target_stream_id: str | None = None
+    right_target_stream_id: str | None = None
+    left_snapshot: TextWindowSnapshot | None = None
+    right_snapshot: TextWindowSnapshot | None = None
+    seq: int = 0
+    version: int = 0
+
+
 class HubConnection:
     def __init__(
         self,
@@ -269,6 +337,7 @@ class HubConnection:
         self.peer_id: str | None = None
         self.presence_streams: dict[str, PresenceStream] = {}
         self.chat_streams: dict[str, ChatStream] = {}
+        self.diff_streams: dict[str, HubDiffStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -319,6 +388,7 @@ class HubConnection:
                 await stream.task
             except asyncio.CancelledError:
                 pass
+        await self.registry.close_connection_diff_streams(self)
 
     async def _watch_presence(self, stream: PresenceStream) -> None:
         try:
@@ -376,6 +446,7 @@ class PeerRegistry:
         self.routed_requests: dict[str, RoutedRequest] = {}
         self.routed_streams_by_target: dict[str, RoutedStream] = {}
         self.routed_streams_by_caller: dict[str, RoutedStream] = {}
+        self.diff_sources_by_target_stream: dict[str, tuple[HubDiffStream, str]] = {}
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer_id = str(payload.get("peerId", ""))
@@ -481,6 +552,221 @@ class PeerRegistry:
             payload=payload,
         ))
 
+    async def open_diff_stream(
+        self,
+        caller: HubConnection,
+        message_id: str,
+        stream_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        try:
+            left = endpoint_from_json(payload["left"])
+            right = endpoint_from_json(payload["right"])
+            window = window_from_json(payload["window"])
+            context_lines = int(payload.get("contextLines", 3))
+        except Exception as exc:
+            await caller.send(ProtocolEnvelope.error_response(
+                message_id=message_id,
+                method="diff.subscribe",
+                error=ErrorInfo("bad-request", str(exc)),
+            ))
+            return
+        stream = HubDiffStream(
+            caller=caller,
+            message_id=message_id,
+            stream_id=stream_id,
+            diff_id=format_diff_id(len(caller.diff_streams) + 1),
+            left=left,
+            right=right,
+            window=window,
+            context_lines=context_lines,
+        )
+        caller.diff_streams[stream_id] = stream
+        await self._open_diff_source(stream, "left", left)
+        await self._open_diff_source(stream, "right", right)
+
+    async def update_diff_window(self, caller: HubConnection, payload: dict[str, Any]) -> bool:
+        stream = caller.diff_streams.get(str(payload.get("streamId", "")))
+        if stream is None:
+            return False
+        stream.window = window_from_json(payload["window"])
+        read_window = effective_window(stream.window, stream.context_lines)
+        for target, target_stream_id in [
+            (stream.left_target, stream.left_target_stream_id),
+            (stream.right_target, stream.right_target_stream_id),
+        ]:
+            if target is None or target_stream_id is None:
+                continue
+            await target.send(ProtocolEnvelope.request(
+                message_id=self._next_relay_message_id(),
+                method="file.window.update",
+                payload={
+                    "streamId": target_stream_id,
+                    "window": {"lineStart": read_window.line_start, "lineEnd": read_window.line_end},
+                },
+            ))
+        return True
+
+    async def close_diff_stream(self, caller: HubConnection, stream_id: str) -> bool:
+        stream = caller.diff_streams.pop(stream_id, None)
+        if stream is None:
+            return False
+        await self._close_diff_stream(stream)
+        return True
+
+    async def close_connection_diff_streams(self, caller: HubConnection) -> None:
+        streams = list(caller.diff_streams.values())
+        caller.diff_streams.clear()
+        for stream in streams:
+            await self._close_diff_stream(stream)
+
+    async def _open_diff_source(self, stream: HubDiffStream, side: str, endpoint: DiffEndpoint) -> None:
+        target = self.connections.get(endpoint.peer_id)
+        if target is None:
+            await self._publish_diff_diagnostic(
+                stream,
+                "peer-offline",
+                f"source peer is not connected: {endpoint.peer_id}",
+                side,
+                {"peerId": endpoint.peer_id},
+            )
+            return
+        target_stream_id = self._next_relay_stream_id()
+        if side == "left":
+            stream.left_target = target
+            stream.left_target_stream_id = target_stream_id
+        else:
+            stream.right_target = target
+            stream.right_target_stream_id = target_stream_id
+        self.diff_sources_by_target_stream[target_stream_id] = (stream, side)
+        read_window = effective_window(stream.window, stream.context_lines)
+        await target.send(ProtocolEnvelope(
+            message_id=self._next_relay_message_id(),
+            kind="request",
+            method="file.subscribe",
+            stream_id=target_stream_id,
+            payload={
+                "repoPath": endpoint.repo_path,
+                "path": endpoint.path,
+                "ref": endpoint.ref.kind,
+                "window": {"lineStart": read_window.line_start, "lineEnd": read_window.line_end},
+            },
+        ))
+
+    async def _close_diff_stream(self, stream: HubDiffStream) -> None:
+        for target, target_stream_id in [
+            (stream.left_target, stream.left_target_stream_id),
+            (stream.right_target, stream.right_target_stream_id),
+        ]:
+            if target_stream_id is not None:
+                self.diff_sources_by_target_stream.pop(target_stream_id, None)
+            if target is None or target_stream_id is None:
+                continue
+            await target.send(ProtocolEnvelope.request(
+                message_id=self._next_relay_message_id(),
+                method="file.unsubscribe",
+                payload={"streamId": target_stream_id},
+            ))
+
+    async def handle_diff_source_event(self, target: HubConnection, envelope: ProtocolEnvelope) -> bool:
+        if not envelope.stream_id:
+            return False
+        source = self.diff_sources_by_target_stream.get(envelope.stream_id)
+        if source is None:
+            return False
+        stream, side = source
+        expected_target = stream.left_target if side == "left" else stream.right_target
+        if expected_target is not target:
+            return False
+        event = str(envelope.payload.get("event", ""))
+        payload = dict(envelope.payload.get("payload", {}))
+        try:
+            if event == "snapshot":
+                snapshot = text_window_snapshot_from_json(payload)
+            elif event == "delta":
+                current = stream.left_snapshot if side == "left" else stream.right_snapshot
+                if current is None:
+                    return True
+                snapshot = apply_text_window_delta(current, text_window_delta_from_json(payload))
+            elif event == "reset":
+                snapshot = reset_from_json(payload).snapshot
+            elif event == "error":
+                await self._publish_diff_diagnostic(
+                    stream,
+                    str(payload.get("code", "peer-offline")),
+                    str(payload.get("message", "source stream error")),
+                    side,
+                    dict(payload.get("details", {})),
+                )
+                return True
+            else:
+                return True
+        except Exception as exc:
+            await self._publish_diff_diagnostic(
+                stream,
+                "decode-failed",
+                f"{side} source payload could not be applied: {exc}",
+                side,
+                {"event": event},
+            )
+            return True
+        if side == "left":
+            stream.left_snapshot = snapshot
+        else:
+            stream.right_snapshot = snapshot
+        await self._publish_diff_if_ready(stream)
+        return True
+
+    async def _publish_diff_if_ready(self, stream: HubDiffStream) -> None:
+        if stream.left_snapshot is None or stream.right_snapshot is None:
+            return
+        try:
+            left_lines = _snapshot_lines(stream.left_snapshot)
+            right_lines = _snapshot_lines(stream.right_snapshot)
+            stream.version += 1
+            payload = diff_payload_from_snapshots(stream, left_lines, right_lines, [])
+        except Exception as exc:
+            await self._publish_diff_diagnostic(
+                stream,
+                "decode-failed",
+                f"source text could not be decoded: {exc}",
+                None,
+                {},
+            )
+            return
+        await self._send_diff_payload(stream, payload)
+
+    async def _publish_diff_diagnostic(
+        self,
+        stream: HubDiffStream,
+        code: str,
+        message: str,
+        endpoint: str | None,
+        details: dict[str, Any],
+    ) -> None:
+        stream.version += 1
+        payload = diff_payload_from_snapshots(
+            stream,
+            [],
+            [],
+            [DiffDiagnostic(code=code, message=message, endpoint=endpoint, details=details)],
+        )
+        await self._send_diff_payload(stream, payload)
+
+    async def _send_diff_payload(self, stream: HubDiffStream, payload: DiffPayload) -> None:
+        stream.seq += 1
+        await stream.caller.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="diff.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload=payload_to_json(payload),
+            ),
+        ))
+
     async def handle_relay_message(self, target: HubConnection, envelope: ProtocolEnvelope) -> None:
         if envelope.kind in {"response", "error"}:
             await self._handle_relay_response(target, envelope)
@@ -512,6 +798,8 @@ class PeerRegistry:
 
     async def _handle_relay_stream_event(self, target: HubConnection, envelope: ProtocolEnvelope) -> None:
         if not envelope.stream_id:
+            return
+        if await self.handle_diff_source_event(target, envelope):
             return
         routed = self.routed_streams_by_target.get(envelope.stream_id)
         if routed is None or routed.target is not target:
@@ -590,6 +878,12 @@ class PeerRegistry:
                     payload={"code": code, "message": message},
                 ),
             ))
+        for target_stream_id, (stream, side) in list(self.diff_sources_by_target_stream.items()):
+            expected_target = stream.left_target if side == "left" else stream.right_target
+            if expected_target is not target:
+                continue
+            self.diff_sources_by_target_stream.pop(target_stream_id, None)
+            await self._publish_diff_diagnostic(stream, code, message, side, {})
 
     def _remove_caller_routes(self, caller: HubConnection) -> None:
         for target_stream_id, routed in list(self.routed_streams_by_target.items()):
@@ -624,3 +918,43 @@ class PeerRegistry:
             method=routed.caller_method,
             error=ErrorInfo("target-timeout", "target peer did not respond before timeout"),
         ))
+
+
+def diff_payload_from_snapshots(
+    stream: HubDiffStream,
+    left_lines: list[str],
+    right_lines: list[str],
+    diagnostics: list[DiffDiagnostic],
+) -> DiffPayload:
+    if diagnostics:
+        payload = DiffPayload(
+            diff_id=stream.diff_id,
+            version=format_diff_version(stream.version),
+            left=source_state_from_snapshot(stream.left, stream.left_snapshot),
+            right=source_state_from_snapshot(stream.right, stream.right_snapshot),
+            window=stream.window,
+            hunks=[],
+            diagnostics=diagnostics,
+        )
+        payload.validate()
+        return payload
+    return build_diff_payload(
+        diff_id=stream.diff_id,
+        version=format_diff_version(stream.version),
+        left=source_state_from_snapshot(stream.left, stream.left_snapshot),
+        right=source_state_from_snapshot(stream.right, stream.right_snapshot),
+        window=stream.window,
+        left_lines=left_lines,
+        right_lines=right_lines,
+        context_lines=stream.context_lines,
+    )
+
+
+def source_state_from_snapshot(endpoint: DiffEndpoint, snapshot: TextWindowSnapshot | None) -> DiffSourceState:
+    if snapshot is None:
+        return DiffSourceState(endpoint=endpoint, file_version="fv000000", content_hash="sha256:unavailable")
+    return DiffSourceState(endpoint=endpoint, file_version=snapshot.file_version, content_hash=snapshot.content_hash)
+
+
+def _snapshot_lines(snapshot: TextWindowSnapshot) -> list[str]:
+    return snapshot.data.decode("utf-8").splitlines()
