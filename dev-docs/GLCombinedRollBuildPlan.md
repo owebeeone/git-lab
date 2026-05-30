@@ -252,6 +252,63 @@ Exit:
 - Workspace status and graph views can run from service fixtures.
 - Mock graph/status behavior remains available.
 
+## Combined Step 2A: Workspace Status Delta Polling
+
+Backend scope:
+
+- Complete the live portion of Services Phase 2 after the initial websocket
+  snapshot path is in place.
+
+Frontend scope:
+
+- Keep the existing service `workspaceStatusTap.ts` API, but verify it handles
+  repeated stream events without resubscribing or losing the last good value.
+
+Deliverables:
+
+- per-`workspace.status.subscribe` polling task owned by the websocket
+  connection.
+- configurable poll interval, with a short test/dev default and a clear config
+  field for local service use.
+- initial `snapshot` event on subscribe.
+- snapshot-on-change event when git status changes. Do not invent fine-grained
+  repo deltas until the snapshot path proves too expensive.
+- `workspace.status.refresh` request that forces an immediate rescan and emits
+  a new snapshot to active stream subscribers.
+- stable content hash or version key for the serialized workspace status so
+  unchanged polls do not publish duplicate events.
+- cancellation of polling tasks on websocket disconnect.
+- protocol error for refresh requests when no workspace stream is active, or a
+  documented no-op response if that is the selected v1 behavior.
+
+Rules:
+
+- `deps.get` remains request/response in this step; do not add
+  `deps.subscribe` unless a UI workflow requires it.
+- Polling is only for workspace git status. File tree changes belong to the
+  watchdog tree step.
+- Snapshot-on-change is acceptable for v1. Fine-grained deltas can be added
+  later behind the same `workspace.status.subscribe` method.
+
+Verification:
+
+- websocket subscribe emits the initial workspace snapshot.
+- modifying a tracked file emits exactly one new snapshot after the polling
+  interval.
+- adding an untracked file emits a new snapshot.
+- repeated polls with no status change do not emit events.
+- `workspace.status.refresh` emits a new snapshot immediately.
+- closing the websocket cancels the polling task.
+- frontend service workspace tap applies two successive stream events and leaves
+  `WORKSPACE_REPOS` at the latest snapshot.
+- mock workspace status remains unchanged.
+
+Exit:
+
+- Workspace status updates live in service mode without a page refresh.
+- The implementation still uses one shared browser `ServiceClient`; taps do not
+  create their own websocket connections.
+
 ## Combined Step 3: Watchdog Tree + Explorer Tap
 
 Backend scope:

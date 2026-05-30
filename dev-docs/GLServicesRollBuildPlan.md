@@ -262,10 +262,15 @@ Verification:
 - tests with temp git repos and submodules where feasible
 - missing/uninitialized submodule case
 - status stream snapshot and delta/reset tests
+- polling task test: unchanged status does not republish
+- tracked-file and untracked-file changes publish a new snapshot
+- `workspace.status.refresh` forces a rescan
+- websocket disconnect cancels status polling
 
 Exit criteria:
 
 - Workspace view can replace mock repo status for local peer
+- Workspace view updates live after local git status changes
 
 ### Phase 3: dependency graph scan
 
