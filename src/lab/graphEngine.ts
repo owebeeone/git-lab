@@ -7,13 +7,14 @@ import type { DependencyEdge, GraphRenderNode, RepoStatus } from './types';
 // pure: it reads GRAPH_NODES (published by GraphSimTap) and calls engine methods
 // from event handlers. No useState/useEffect/useRef in the view.
 
-export const VBW = 840;
-export const VBH = 520;
-const SPRING_LEN = 210;
-const SPRING_K = 0.04;
-const PADDING = 34;
-const GRAVITY = 0.014;
-const FRICTION = 0.82;
+export const VBW = 1080;
+export const VBH = 680;
+const SPRING_LEN = 285;
+const SPRING_K = 0.03;
+const PADDING = 72;
+const GRAVITY = 0.009;
+const FRICTION = 0.84;
+const REPULSION = 5200;
 const SETTLE = 0.18;
 
 interface PNode {
@@ -45,12 +46,14 @@ let running = false;
 function build(repos: RepoStatus[], edges: DependencyEdge[]) {
   nodes = repos.map((r, i) => {
     const a = (i / Math.max(1, repos.length)) * Math.PI * 2;
+    const radiusX = Math.min(390, Math.max(210, repos.length * 24));
+    const radiusY = Math.min(250, Math.max(150, repos.length * 16));
     return {
       id: r.path || 'root', repo: r, color: statusColor(r),
-      x: r.path === '' ? VBW / 2 : VBW / 2 + Math.cos(a) * 180,
-      y: r.path === '' ? VBH / 2 : VBH / 2 + Math.sin(a) * 150,
-      vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 4,
-      width: 168, height: 66, baseW: 168, baseH: 66, expW: 250, expH: 168,
+      x: r.path === '' ? VBW / 2 : VBW / 2 + Math.cos(a) * radiusX,
+      y: r.path === '' ? VBH / 2 : VBH / 2 + Math.sin(a) * radiusY,
+      vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 3,
+      width: 170, height: 66, baseW: 170, baseH: 66, expW: 280, expH: 186,
     };
   });
   links = edges;
@@ -103,6 +106,14 @@ function step() {
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
       const a = nodes[i]; const b = nodes[j];
+      const dxRepel = b.x - a.x; const dyRepel = b.y - a.y;
+      const distSq = Math.max(2400, dxRepel * dxRepel + dyRepel * dyRepel);
+      const dist = Math.sqrt(distSq);
+      const force = REPULSION / distSq;
+      const fx = (dxRepel / dist) * force;
+      const fy = (dyRepel / dist) * force;
+      if (a.id !== dragId) { a.vx -= fx; a.vy -= fy; }
+      if (b.id !== dragId) { b.vx += fx; b.vy += fy; }
       const minW = (a.width + b.width) / 2 + PADDING;
       const minH = (a.height + b.height) / 2 + PADDING;
       const dx = b.x - a.x; const dy = b.y - a.y;

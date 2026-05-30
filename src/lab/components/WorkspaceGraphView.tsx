@@ -18,6 +18,14 @@ function boundaryIntersection(from: GraphRenderNode, to: GraphRenderNode) {
   return { x: to.x + dx * scale, y: to.y + dy * scale };
 }
 
+function edgeNodeId(repoPath: string) {
+  return repoPath || 'root';
+}
+
+function edgeColor(edgeId: string) {
+  return `url(#arrow-${edgeId})`;
+}
+
 export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[]; peer?: Peer }) {
   const { openInFiles } = useEditor();
   const nodes = useGrip(GRAPH_NODES) ?? [];
@@ -27,24 +35,29 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
   graphEngine.setInput(repos, depEdges, peer?.id ?? '');
 
   const byId = new Map(nodes.map((n) => [n.id, n]));
+  const orderedNodes = [...nodes].sort((a, b) => Number(a.expanded) - Number(b.expanded));
   // Dependency edges (source depends on target), arrow points to the dependency.
   const edges = depEdges
-    .map((e) => {
-      const s = byId.get(e.source);
-      const t = byId.get(e.target);
+    .map((e, index) => {
+      const source = edgeNodeId(e.source);
+      const target = edgeNodeId(e.target);
+      const s = byId.get(source);
+      const t = byId.get(target);
       if (!s || !t) return null;
       const ti = boundaryIntersection(s, t);
       const si = boundaryIntersection(t, s);
-      const angle = Math.atan2(ti.y - si.y, ti.x - si.x);
-      const al = 9; const aw = 5.5;
-      const p1x = ti.x - al * Math.cos(angle) + aw * Math.sin(angle);
-      const p1y = ti.y - al * Math.sin(angle) - aw * Math.cos(angle);
-      const p2x = ti.x - al * Math.cos(angle) - aw * Math.sin(angle);
-      const p2y = ti.y - al * Math.sin(angle) + aw * Math.cos(angle);
       const hot = s.expanded || t.expanded;
-      return { id: `${e.source}->${e.target}`, x1: si.x, y1: si.y, x2: ti.x, y2: ti.y, arrow: `M ${ti.x} ${ti.y} L ${p1x} ${p1y} L ${p2x} ${p2y} Z`, color: hot ? s.color : 'var(--border)', hot };
+      return {
+        id: `${source}->${target}-${index}`,
+        x1: si.x,
+        y1: si.y,
+        x2: ti.x,
+        y2: ti.y,
+        color: hot ? s.color : '#7c8494',
+        hot,
+      };
     })
-    .filter(Boolean) as { id: string; x1: number; y1: number; x2: number; y2: number; arrow: string; color: string; hot: boolean }[];
+    .filter(Boolean) as { id: string; x1: number; y1: number; x2: number; y2: number; color: string; hot: boolean }[];
 
   const openInTab = (repoPath: string, path: string) => openInFiles(`${repoPath}::${path}`);
 
@@ -66,16 +79,40 @@ export default function WorkspaceGraphView({ repos, peer }: { repos: RepoStatus[
         onMouseLeave={() => graphEngine.endDrag()}
         onClick={() => graphEngine.pin(null)}
       >
+        <defs>
+          {edges.map((e) => (
+            <marker
+              key={e.id}
+              id={`arrow-${e.id}`}
+              markerWidth="10"
+              markerHeight="8"
+              refX="9"
+              refY="4"
+              orient="auto"
+              markerUnits="strokeWidth"
+            >
+              <path d="M 0 0 L 10 4 L 0 8 z" fill={e.color} />
+            </marker>
+          ))}
+        </defs>
         <g>
           {edges.map((e) => (
             <g key={e.id}>
-              <line x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2} stroke={e.color} strokeWidth={e.hot ? 2.4 : 1.5} />
-              <path d={e.arrow} fill={e.color} />
+              <line
+                x1={e.x1}
+                y1={e.y1}
+                x2={e.x2}
+                y2={e.y2}
+                stroke={e.color}
+                strokeWidth={e.hot ? 2.8 : 1.8}
+                markerEnd={edgeColor(e.id)}
+                opacity={e.hot ? 0.98 : 0.72}
+              />
             </g>
           ))}
         </g>
         <g>
-          {nodes.map((n) => (
+          {orderedNodes.map((n) => (
             <g
               key={n.id}
               transform={`translate(${n.x}, ${n.y})`}
