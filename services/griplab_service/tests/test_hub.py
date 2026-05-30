@@ -177,6 +177,15 @@ def test_hub_peer_health_and_collaborator_mutation(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_hub_assigns_distinct_remote_hub_ports_per_collaborator(tmp_path: Path) -> None:
+    config = load_config(write_hub_config(tmp_path))
+    registry = PeerRegistry(config)
+
+    assert registry._remote_hub_port_for("weftpi") == 43140
+    assert registry._remote_hub_port_for("weftpi-another") == 43141
+    assert registry._remote_hub_port_for("weftpi") == 43140
+
+
 def test_hub_chat_post_subscribe_and_persist_order(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_hub_config(tmp_path))

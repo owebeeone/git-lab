@@ -557,6 +557,8 @@ class PeerRegistry:
         self.bootstrap_worker: HubBootstrapWorker | None = None
         self.bootstrap_tasks: dict[str, asyncio.Task[None]] = {}
         self.bootstrap_states: dict[str, dict[str, object]] = {}
+        self.remote_hub_ports: dict[str, int] = {}
+        self._next_remote_hub_port = 43140
 
     def hello(self, payload: dict[str, Any]) -> str:
         peer = connected_presence(payload)
@@ -627,6 +629,7 @@ class PeerRegistry:
     async def _run_bootstrap(self, collaborator: CollaboratorRecord) -> None:
         assert self.bootstrap_worker is not None
         payload = collaborator.to_json()
+        payload["remoteHubPort"] = self._remote_hub_port_for(collaborator.peer_id)
         try:
             result = await asyncio.to_thread(self.bootstrap_worker.bootstrap, payload)
         except Exception as exc:
@@ -761,6 +764,18 @@ class PeerRegistry:
         self.bootstrap_states.pop(peer_id, None)
         self.publish()
         return existed
+
+    def _remote_hub_port_for(self, peer_id: str) -> int:
+        current = self.remote_hub_ports.get(peer_id)
+        if current is not None:
+            return current
+        used = set(self.remote_hub_ports.values())
+        while self._next_remote_hub_port in used:
+            self._next_remote_hub_port += 1
+        port = self._next_remote_hub_port
+        self.remote_hub_ports[peer_id] = port
+        self._next_remote_hub_port += 1
+        return port
 
     def _bootstrap_health(self, peer_id: str, peer: dict[str, object]) -> dict[str, object]:
         state = self.bootstrap_states[peer_id]
