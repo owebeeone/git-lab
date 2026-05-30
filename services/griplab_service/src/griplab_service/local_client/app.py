@@ -42,7 +42,7 @@ from griplab_service.chat_store import ChatStore, chat_store_root
 from griplab_service.collaborators import health_for_presence
 from griplab_service.config import ServiceConfig
 from griplab_service.local_client.deps import DependencyGraph, get_dependency_graph
-from griplab_service.local_client.tree import TreeWatcher, tree_snapshot_payload
+from griplab_service.local_client.tree import TreeWatchRegistry, tree_snapshot_payload
 from griplab_service.local_client.workspace import ChangedFile, RepoStatus, collect_workspace_status
 from griplab_service.probe import build_probe
 from griplab_service.protocol import (
@@ -60,6 +60,7 @@ CONFIG_KEY = web.AppKey("config", ServiceConfig)
 SESSIONS_KEY = web.AppKey("sessions", Any)
 BOOTSTRAPS_KEY = web.AppKey("bootstraps", Any)
 CHAT_KEY = web.AppKey("chat", Any)
+TREE_WATCH_KEY = web.AppKey("tree_watch", TreeWatchRegistry)
 
 
 class LocalClientServer:
@@ -147,6 +148,7 @@ def create_app(config: ServiceConfig) -> web.Application:
     app[SESSIONS_KEY] = SessionManager(config)
     app[BOOTSTRAPS_KEY] = EphemeralBootstrapManager()
     app[CHAT_KEY] = ChatStore(chat_store_root(config.path, config.workspace.root))
+    app[TREE_WATCH_KEY] = TreeWatchRegistry(config.workspace.root, asyncio.get_running_loop())
     app.on_cleanup.append(cleanup_app)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
@@ -157,6 +159,7 @@ def create_app(config: ServiceConfig) -> web.Application:
 
 
 async def cleanup_app(app: web.Application) -> None:
+    await app[TREE_WATCH_KEY].close()
     app[BOOTSTRAPS_KEY].close()
 
 
@@ -189,6 +192,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
         request.app[SESSIONS_KEY],
         request.app[BOOTSTRAPS_KEY],
         request.app[CHAT_KEY],
+        request.app[TREE_WATCH_KEY],
         ws,
     )
 
@@ -479,7 +483,6 @@ class TreeStream:
     last_hash: str | None = None
     task: asyncio.Task[None] | None = None
     queue: asyncio.Queue[None] | None = None
-    watcher: TreeWatcher | None = None
 
 
 @dataclass
@@ -537,12 +540,14 @@ class LocalClientConnection:
         session_manager: "SessionManager",
         bootstraps: EphemeralBootstrapManager,
         chat_store: ChatStore,
+        tree_watches: TreeWatchRegistry,
         ws: web.WebSocketResponse,
     ) -> None:
         self.config = config
         self.session_manager = session_manager
         self.bootstraps = bootstraps
         self.chat_store = chat_store
+        self.tree_watches = tree_watches
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
@@ -582,11 +587,9 @@ class LocalClientConnection:
             return
         queue: asyncio.Queue[None] = asyncio.Queue()
         stream = TreeStream(message_id=message_id, stream_id=stream_id, queue=queue)
-        watcher = TreeWatcher(self.config.workspace.root, asyncio.get_running_loop(), queue)
-        stream.watcher = watcher
         self.tree_streams[stream_id] = stream
         await self._publish_tree(stream, force=True)
-        watcher.start()
+        self.tree_watches.subscribe(queue)
         stream.task = asyncio.create_task(self._watch_tree(stream))
 
     async def refresh_tree(self, message_id: str) -> int:
@@ -764,8 +767,8 @@ class LocalClientConnection:
                 await stream.task
             except asyncio.CancelledError:
                 pass
-        if stream.watcher is not None:
-            stream.watcher.stop()
+        if stream.queue is not None:
+            self.tree_watches.unsubscribe(stream.queue)
 
     async def _watch_file(self, stream: FileStream) -> None:
         assert stream.queue is not None

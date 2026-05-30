@@ -264,6 +264,10 @@
 .tree-row.status-untracked { color: var(--err); }
 .tree-row.status-ignored { color: var(--accent); }
 .tree-row.status-clean { color: var(--text); }
+.tree-status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0; flex: 0 0 6px; }
+.tree-row.status-dirty .tree-status-dot,
+.tree-row.status-untracked .tree-status-dot,
+.tree-row.status-ignored .tree-status-dot { opacity: 0.95; }
 .tree-caret { display: inline-flex; transition: transform 0.15s; color: var(--muted); }
 .tree-caret.open { transform: rotate(90deg); }
 .tree-row svg { flex: 0 0 auto; opacity: 0.8; }
@@ -434,6 +438,7 @@
 .session-argv { font-family: ui-monospace, monospace; font-size: 0.85rem; }
 .session-meta { color: var(--muted); font-size: 0.75rem; }
 .diag-strip { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--diff-del); border-bottom: 1px solid var(--border); font-size: 0.78rem; flex-wrap: wrap; }
+.diag-strip.info { background: var(--card); color: var(--muted); }
 .diag-count { color: var(--err); }
 .diag-failure { font-family: ui-monospace, monospace; background: var(--card); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 .xterm-host { flex: 1 1 auto; min-height: 0; padding: 6px 8px; overflow: hidden; }

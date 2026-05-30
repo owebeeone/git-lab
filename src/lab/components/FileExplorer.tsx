@@ -55,7 +55,10 @@ function buildTree(entries: WorkspaceTreeEntry[], repos: RepoStatus[]): TNode {
       if (isFile) {
         child.repoPath = repoPath;
         child.path = path;
-        child.gitStatus = statusForChange(statusMap.get(statusKey(repoPath, path)));
+        child.gitStatus = statusForChange(
+          statusMap.get(statusKey(repoPath, path))
+            ?? statusMap.get(statusKey('', fullPath)),
+        );
       }
       cur = child;
     });
@@ -69,7 +72,9 @@ function buildStatusMap(repos: RepoStatus[]): Map<string, FileChangeKind> {
   const map = new Map<string, FileChangeKind>();
   for (const repo of repos) {
     for (const file of repo.changedFiles) {
+      const fullPath = joinPath(repo.path, file.path);
       map.set(statusKey(repo.path, file.path), file.change);
+      map.set(statusKey('', fullPath), file.change);
     }
   }
   return map;
@@ -184,6 +189,7 @@ export default function FileExplorer({
           onClick={() => onOpen(key)}
         >
           <Icon name="file" size={14} />
+          <span className={`tree-status-dot ${node.gitStatus}`} />
           <span>{node.name}</span>
         </button>
       );
@@ -203,6 +209,7 @@ export default function FileExplorer({
         >
           <span className={`tree-caret${isOpen ? ' open' : ''}`}><Icon name="chevron" size={12} /></span>
           <Icon name="folder" size={14} />
+          <span className={`tree-status-dot ${node.gitStatus}`} />
           <span>{node.name}</span>
         </button>
         {isOpen && kids.map((k) => renderNode(k, depth + 1, `${idPath}/${k.name}`))}

@@ -232,3 +232,48 @@ class TreeWatcher:
 
     def _notify(self) -> None:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
+
+
+class TreeWatchRegistry:
+    """Share one recursive watchdog observer across tree subscriptions."""
+
+    def __init__(
+        self,
+        workspace_root: Path,
+        loop: asyncio.AbstractEventLoop,
+        ignore_names: frozenset[str] = DEFAULT_TREE_IGNORE_NAMES,
+        observer_factory: Callable[[], BaseObserver] = Observer,
+    ) -> None:
+        self.queue: asyncio.Queue[None] = asyncio.Queue()
+        self.watcher = TreeWatcher(workspace_root, loop, self.queue, ignore_names, observer_factory)
+        self.subscribers: set[asyncio.Queue[None]] = set()
+        self.task: asyncio.Task[None] | None = None
+
+    def subscribe(self, queue: asyncio.Queue[None]) -> None:
+        self.subscribers.add(queue)
+        if self.task is None:
+            self.watcher.start()
+            self.task = asyncio.create_task(self._broadcast())
+
+    def unsubscribe(self, queue: asyncio.Queue[None]) -> None:
+        self.subscribers.discard(queue)
+
+    async def close(self) -> None:
+        if self.task is not None:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
+        self.watcher.stop()
+        self.subscribers.clear()
+
+    async def _broadcast(self) -> None:
+        try:
+            while True:
+                await self.queue.get()
+                for queue in list(self.subscribers):
+                    queue.put_nowait(None)
+        except asyncio.CancelledError:
+            raise

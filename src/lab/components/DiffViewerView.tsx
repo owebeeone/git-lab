@@ -114,6 +114,21 @@ export default function DiffViewerView() {
       </div>
 
       <div className="diff-table">
+        {!activeFile && (
+          <div className="diag-strip info">
+            Select a file to start a diff stream.
+          </div>
+        )}
+        {activeFile && streamStatus.status === 'idle' && (
+          <div className="diag-strip info">
+            Waiting for diff stream…
+          </div>
+        )}
+        {activeFile && streamStatus.status === 'loading' && (
+          <div className="diag-strip info">
+            Loading diff stream…
+          </div>
+        )}
         {streamStatus.status === 'error' && <div className="diag-strip">{streamStatus.error}</div>}
         {diagnostics.map((diagnostic) => (
           <div className="diag-strip" key={`${diagnostic.code}:${diagnostic.endpoint ?? 'both'}`}>
@@ -121,6 +136,11 @@ export default function DiffViewerView() {
             <span>{diagnostic.message}</span>
           </div>
         ))}
+        {activeFile && streamStatus.status === 'ready' && diagnostics.length === 0 && rows.length === 0 && (
+          <div className="diag-strip info">
+            No differences in the selected window.
+          </div>
+        )}
         {rows.map((r, i) => {
           const isFocus = focusLine != null && (r.leftNo === focusLine || r.rightNo === focusLine);
           return (

@@ -11,7 +11,7 @@ from griplab_service.cli import main
 from griplab_service.config import load_config
 from griplab_service.local_client import LocalClientServer
 from griplab_service.local_client.app import SessionManager, parse_terminal_argv
-from griplab_service.local_client.tree import tree_snapshot_payload
+from griplab_service.local_client.tree import TreeWatchRegistry, tree_snapshot_payload
 
 
 def write_config(tmp_path: Path, *, status_poll_interval_ms: int = 1000) -> Path:
@@ -245,6 +245,55 @@ def test_tree_snapshot_preserves_child_repo_file_address(tmp_path: Path) -> None
 
     assert ("", "README.md") in entries
     assert ("child", "README.md") in entries
+
+
+def test_tree_watch_registry_shares_one_observer(tmp_path: Path) -> None:
+    class FakeObserver:
+        def __init__(self) -> None:
+            self.schedule_count = 0
+            self.start_count = 0
+            self.stop_count = 0
+
+        def schedule(self, *args: object, **kwargs: object) -> None:
+            self.schedule_count += 1
+
+        def start(self) -> None:
+            self.start_count += 1
+
+        def stop(self) -> None:
+            self.stop_count += 1
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+
+    async def run() -> None:
+        observers: list[FakeObserver] = []
+
+        def observer_factory() -> FakeObserver:
+            observer = FakeObserver()
+            observers.append(observer)
+            return observer
+
+        registry = TreeWatchRegistry(tmp_path, asyncio.get_running_loop(), observer_factory=observer_factory)
+        q1: asyncio.Queue[None] = asyncio.Queue()
+        q2: asyncio.Queue[None] = asyncio.Queue()
+
+        registry.subscribe(q1)
+        registry.subscribe(q2)
+        assert len(observers) == 1
+        assert observers[0].schedule_count == 1
+        assert observers[0].start_count == 1
+
+        registry.watcher._notify()
+        await asyncio.wait_for(q1.get(), timeout=1)
+        await asyncio.wait_for(q2.get(), timeout=1)
+
+        registry.unsubscribe(q1)
+        registry.unsubscribe(q2)
+        await registry.close()
+        assert observers[0].stop_count == 1
+
+    asyncio.run(run())
 
 
 def test_tree_stream_publishes_watchdog_changes_and_refresh(tmp_path: Path) -> None:
