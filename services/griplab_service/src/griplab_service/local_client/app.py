@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,7 @@ from griplab_service.protocol import (
 )
 
 CONFIG_KEY = web.AppKey("config", ServiceConfig)
+SESSIONS_KEY = web.AppKey("sessions", Any)
 
 
 class LocalClientServer:
@@ -122,6 +124,7 @@ class LocalClientServer:
 def create_app(config: ServiceConfig) -> web.Application:
     app = web.Application()
     app[CONFIG_KEY] = config
+    app[SESSIONS_KEY] = SessionManager(config)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/probe", handle_probe)
     app.router.add_get("/workspace/status", handle_workspace_status)
@@ -154,7 +157,7 @@ async def handle_ws(request: web.Request) -> web.WebSocketResponse:
     config = request.app[CONFIG_KEY]
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    connection = LocalClientConnection(config, ws)
+    connection = LocalClientConnection(config, request.app[SESSIONS_KEY], ws)
 
     try:
         async for msg in ws:
@@ -266,6 +269,34 @@ async def handle_protocol_message(
             payload={"stopped": stopped},
         ))
         return
+    if envelope.method == "sessions.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "sessions.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_sessions(envelope.message_id, envelope.stream_id)
+        return
+    if envelope.method == "session.output.subscribe":
+        if not envelope.stream_id:
+            await connection.send(ProtocolEnvelope.error_response(
+                message_id=envelope.message_id,
+                method=envelope.method,
+                error=ErrorInfo("missing-stream-id", "session.output.subscribe requires streamId"),
+            ))
+            return
+        await connection.subscribe_session_output(envelope.message_id, envelope.stream_id, envelope.payload)
+        return
+    if envelope.method == "cmd.run":
+        session_id = await connection.session_manager.run_command(envelope.payload)
+        await connection.send(ProtocolEnvelope.response(
+            message_id=envelope.message_id,
+            method=envelope.method,
+            payload={"sessionId": session_id},
+        ))
+        return
     await connection.send(ProtocolEnvelope.error_response(
         message_id=envelope.message_id,
         method=envelope.method,
@@ -304,13 +335,36 @@ class FileStream:
     queue: asyncio.Queue[None] | None = None
 
 
+@dataclass
+class SessionsStream:
+    message_id: str
+    stream_id: str
+    queue: asyncio.Queue[None]
+    seq: int = 0
+    task: asyncio.Task[None] | None = None
+
+
+@dataclass
+class SessionOutputStream:
+    message_id: str
+    stream_id: str
+    session_id: str
+    repo_path: str
+    queue: asyncio.Queue[None]
+    seq: int = 0
+    task: asyncio.Task[None] | None = None
+
+
 class LocalClientConnection:
-    def __init__(self, config: ServiceConfig, ws: web.WebSocketResponse) -> None:
+    def __init__(self, config: ServiceConfig, session_manager: "SessionManager", ws: web.WebSocketResponse) -> None:
         self.config = config
+        self.session_manager = session_manager
         self.ws = ws
         self.workspace_status_streams: dict[str, WorkspaceStatusStream] = {}
         self.tree_streams: dict[str, TreeStream] = {}
         self.file_streams: dict[str, FileStream] = {}
+        self.sessions_streams: dict[str, SessionsStream] = {}
+        self.output_streams: dict[str, SessionOutputStream] = {}
         self._send_lock = asyncio.Lock()
 
     async def send(self, envelope: ProtocolEnvelope) -> None:
@@ -406,18 +460,56 @@ class LocalClientConnection:
         await self._close_file_stream(stream, "unsubscribed")
         return True
 
+    async def subscribe_sessions(self, message_id: str, stream_id: str) -> None:
+        existing = self.sessions_streams.get(stream_id)
+        if existing is not None:
+            await self._publish_sessions(existing)
+            return
+        queue = self.session_manager.add_sessions_subscriber()
+        stream = SessionsStream(message_id=message_id, stream_id=stream_id, queue=queue)
+        self.sessions_streams[stream_id] = stream
+        await self._publish_sessions(stream)
+        stream.task = asyncio.create_task(self._watch_sessions(stream))
+
+    async def subscribe_session_output(self, message_id: str, stream_id: str, payload: dict[str, Any]) -> None:
+        session_id = str(payload.get("sessionId", ""))
+        repo_path = str(payload.get("repoPath", ""))
+        queue = self.session_manager.add_output_subscriber(session_id, repo_path)
+        stream = SessionOutputStream(
+            message_id=message_id,
+            stream_id=stream_id,
+            session_id=session_id,
+            repo_path=repo_path,
+            queue=queue,
+        )
+        self.output_streams[stream_id] = stream
+        await self._publish_session_output(stream)
+        stream.task = asyncio.create_task(self._watch_session_output(stream))
+
     async def close(self) -> None:
         status_tasks = [stream.task for stream in self.workspace_status_streams.values() if stream.task is not None]
         tree_streams = list(self.tree_streams.values())
         file_streams = list(self.file_streams.values())
+        sessions_streams = list(self.sessions_streams.values())
+        output_streams = list(self.output_streams.values())
         self.workspace_status_streams.clear()
         self.tree_streams.clear()
         self.file_streams.clear()
+        self.sessions_streams.clear()
+        self.output_streams.clear()
         for stream in tree_streams:
             await self._close_tree_stream(stream)
         for stream in file_streams:
             await self._close_file_stream(stream, "closed")
-        tasks = status_tasks
+        for stream in sessions_streams:
+            self.session_manager.remove_sessions_subscriber(stream.queue)
+            if stream.task is not None:
+                stream.task.cancel()
+        for stream in output_streams:
+            self.session_manager.remove_output_subscriber(stream.session_id, stream.repo_path, stream.queue)
+            if stream.task is not None:
+                stream.task.cancel()
+        tasks = status_tasks + [stream.task for stream in sessions_streams + output_streams if stream.task is not None]
         for task in tasks:
             task.cancel()
         for task in tasks:
@@ -481,6 +573,50 @@ class LocalClientConnection:
             stream.watcher.stop()
         if stream.connection is not None:
             await stream.connection.close(reason)
+
+    async def _watch_sessions(self, stream: SessionsStream) -> None:
+        try:
+            while stream.stream_id in self.sessions_streams:
+                await stream.queue.get()
+                await self._publish_sessions(stream)
+        except asyncio.CancelledError:
+            raise
+
+    async def _watch_session_output(self, stream: SessionOutputStream) -> None:
+        try:
+            while stream.stream_id in self.output_streams:
+                await stream.queue.get()
+                await self._publish_session_output(stream)
+        except asyncio.CancelledError:
+            raise
+
+    async def _publish_sessions(self, stream: SessionsStream) -> None:
+        stream.seq += 1
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="sessions.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload={"sessions": self.session_manager.sessions_json()},
+            ),
+        ))
+
+    async def _publish_session_output(self, stream: SessionOutputStream) -> None:
+        stream.seq += 1
+        await self.send(ProtocolEnvelope.stream_event(
+            message_id=stream.message_id,
+            method="session.output.subscribe",
+            stream_id=stream.stream_id,
+            event=StreamEvent(
+                stream_id=stream.stream_id,
+                seq=stream.seq,
+                event="snapshot",
+                payload=self.session_manager.output_json(stream.session_id, stream.repo_path),
+            ),
+        ))
 
     async def _send_file_event(self, stream: FileStream, event: str, payload: dict[str, Any]) -> None:
         await self.send(ProtocolEnvelope.stream_event(
@@ -684,3 +820,163 @@ class FileWatcher:
 
     def _notify(self) -> None:
         self.loop.call_soon_threadsafe(self.queue.put_nowait, None)
+
+
+@dataclass
+class RepoRunState:
+    repo_path: str
+    exit_code: int | None
+    output: str = ""
+    duration_ms: int | None = None
+
+
+@dataclass
+class CommandSessionState:
+    id: str
+    peer_id: str
+    argv: list[str]
+    started_at: int
+    targets: list[RepoRunState]
+    interactive: bool = False
+    hidden: bool = False
+
+
+class SessionManager:
+    def __init__(self, config: ServiceConfig) -> None:
+        self.config = config
+        self.sessions: list[CommandSessionState] = []
+        self.session_subscribers: set[asyncio.Queue[None]] = set()
+        self.output_subscribers: dict[tuple[str, str], set[asyncio.Queue[None]]] = {}
+        self._index = 0
+
+    def add_sessions_subscriber(self) -> asyncio.Queue[None]:
+        queue: asyncio.Queue[None] = asyncio.Queue()
+        self.session_subscribers.add(queue)
+        return queue
+
+    def remove_sessions_subscriber(self, queue: asyncio.Queue[None]) -> None:
+        self.session_subscribers.discard(queue)
+
+    def add_output_subscriber(self, session_id: str, repo_path: str) -> asyncio.Queue[None]:
+        queue: asyncio.Queue[None] = asyncio.Queue()
+        self.output_subscribers.setdefault((session_id, repo_path), set()).add(queue)
+        return queue
+
+    def remove_output_subscriber(self, session_id: str, repo_path: str, queue: asyncio.Queue[None]) -> None:
+        subscribers = self.output_subscribers.get((session_id, repo_path))
+        if not subscribers:
+            return
+        subscribers.discard(queue)
+        if not subscribers:
+            self.output_subscribers.pop((session_id, repo_path), None)
+
+    async def run_command(self, payload: dict[str, Any]) -> str:
+        argv = parse_argv(payload)
+        repos = parse_repo_paths(payload)
+        peer_id = str(payload.get("peerId", self.config.self_peer_id))
+        self._index += 1
+        session_id = f"sess-{int(time.time() * 1000)}-{self._index:04d}"
+        session = CommandSessionState(
+            id=session_id,
+            peer_id=peer_id,
+            argv=argv,
+            started_at=int(time.time() * 1000),
+            targets=[RepoRunState(repo_path=repo, exit_code=None) for repo in repos],
+        )
+        self.sessions.insert(0, session)
+        self._publish_sessions()
+        for target in session.targets:
+            asyncio.create_task(self._run_target(session, target))
+        return session_id
+
+    def sessions_json(self) -> list[dict[str, object]]:
+        return [session_to_json(session) for session in self.sessions]
+
+    def output_json(self, session_id: str, repo_path: str) -> dict[str, object]:
+        target = self._find_target(session_id, repo_path)
+        return {
+            "sessionId": session_id,
+            "repoPath": repo_path,
+            "output": target.output if target else "",
+            "exitCode": target.exit_code if target else None,
+        }
+
+    async def _run_target(self, session: CommandSessionState, target: RepoRunState) -> None:
+        start = time.monotonic()
+        target.output += "$ " + " ".join(session.argv) + "\n"
+        self._publish_output(session.id, target.repo_path)
+        cwd = (self.config.workspace.root / target.repo_path).resolve()
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *session.argv,
+                cwd=str(cwd),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            assert process.stdout is not None
+            while True:
+                chunk = await process.stdout.read(4096)
+                if not chunk:
+                    break
+                target.output += chunk.decode("utf-8", errors="replace")
+                self._publish_output(session.id, target.repo_path)
+            target.exit_code = await process.wait()
+        except Exception as exc:
+            target.output += f"error: {exc}\n"
+            target.exit_code = 127
+        finally:
+            target.duration_ms = int((time.monotonic() - start) * 1000)
+            self._publish_output(session.id, target.repo_path)
+            self._publish_sessions()
+
+    def _find_target(self, session_id: str, repo_path: str) -> RepoRunState | None:
+        session = next((item for item in self.sessions if item.id == session_id), None)
+        if not session:
+            return None
+        return next((target for target in session.targets if target.repo_path == repo_path), None)
+
+    def _publish_sessions(self) -> None:
+        for queue in list(self.session_subscribers):
+            queue.put_nowait(None)
+
+    def _publish_output(self, session_id: str, repo_path: str) -> None:
+        for queue in list(self.output_subscribers.get((session_id, repo_path), set())):
+            queue.put_nowait(None)
+
+
+def parse_argv(payload: dict[str, Any]) -> list[str]:
+    argv = payload.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item for item in argv):
+        raise ValueError("cmd.run requires non-empty argv")
+    return list(argv)
+
+
+def parse_repo_paths(payload: dict[str, Any]) -> list[str]:
+    repos = payload.get("repos", [""])
+    if not isinstance(repos, list) or not repos:
+        raise ValueError("cmd.run requires at least one repo")
+    result = [str(repo) for repo in repos]
+    for repo in result:
+        if Path(repo).is_absolute() or ".." in Path(repo).parts:
+            raise ValueError("repo paths must stay within the workspace")
+    return result
+
+
+def session_to_json(session: CommandSessionState) -> dict[str, object]:
+    return {
+        "id": session.id,
+        "peerId": session.peer_id,
+        "argv": session.argv,
+        "startedAt": session.started_at,
+        "interactive": session.interactive,
+        "hidden": session.hidden,
+        "targets": [
+            {
+                "repoPath": target.repo_path,
+                "exitCode": target.exit_code,
+                "durationMs": target.duration_ms,
+                "output": target.output,
+            }
+            for target in session.targets
+        ],
+    }

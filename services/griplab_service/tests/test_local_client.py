@@ -329,6 +329,77 @@ def test_file_stream_reports_unsupported_ref(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_command_run_updates_sessions_and_output_streams(tmp_path: Path) -> None:
+    async def run() -> None:
+        config = load_config(write_config(tmp_path, status_poll_interval_ms=1000))
+        server = LocalClientServer(config)
+        server.start()
+        try:
+            async with ClientSession() as session:
+                async with session.ws_connect(server.ws_url) as ws:
+                    await ws.send_json({
+                        "messageId": "m000001",
+                        "kind": "request",
+                        "method": "sessions.subscribe",
+                        "streamId": "sessions0001",
+                        "payload": {},
+                    })
+                    initial = await ws.receive_json(timeout=2)
+                    assert initial["payload"]["payload"] == {"sessions": []}
+
+                    await ws.send_json({
+                        "messageId": "m000002",
+                        "kind": "request",
+                        "method": "cmd.run",
+                        "payload": {
+                            "argv": ["python", "-c", "print('session-ok')"],
+                            "repos": [""],
+                            "peerId": "me",
+                        },
+                    })
+                    response = await ws.receive_json(timeout=2)
+                    assert response["kind"] == "response"
+                    session_id = response["payload"]["sessionId"]
+
+                    created = await ws.receive_json(timeout=2)
+                    sessions = created["payload"]["payload"]["sessions"]
+                    assert sessions[0]["id"] == session_id
+                    assert sessions[0]["targets"][0]["exitCode"] is None
+
+                    await ws.send_json({
+                        "messageId": "m000003",
+                        "kind": "request",
+                        "method": "session.output.subscribe",
+                        "streamId": "output0001",
+                        "payload": {"sessionId": session_id, "repoPath": ""},
+                    })
+                    output = await ws.receive_json(timeout=2)
+                    assert output["payload"]["payload"]["sessionId"] == session_id
+
+                    final_output = output
+                    for _ in range(5):
+                        msg = await ws.receive_json(timeout=2)
+                        if msg["method"] == "session.output.subscribe":
+                            final_output = msg
+                            if "session-ok" in msg["payload"]["payload"]["output"]:
+                                break
+                    assert "session-ok" in final_output["payload"]["payload"]["output"]
+
+                    for _ in range(5):
+                        msg = await ws.receive_json(timeout=2)
+                        if msg["method"] == "sessions.subscribe":
+                            target = msg["payload"]["payload"]["sessions"][0]["targets"][0]
+                            if target["exitCode"] is not None:
+                                assert target["exitCode"] == 0
+                                break
+                    else:
+                        raise AssertionError("command session did not finish")
+        finally:
+            server.stop()
+
+    asyncio.run(run())
+
+
 def test_workspace_status_stream_polls_changes_and_suppresses_duplicates(tmp_path: Path) -> None:
     async def run() -> None:
         config = load_config(write_config(tmp_path, status_poll_interval_ms=100))

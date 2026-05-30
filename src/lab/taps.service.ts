@@ -2,11 +2,11 @@ import { createFunctionTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
 import {
   GRAPH_NODES,
-  SESSION_DIAGNOSTICS,
-  SESSION_OUTPUT,
 } from './grips';
 import { createServiceDepsGraphTap } from './serviceTaps/depsGraphTap';
 import { createServiceFileContentTap } from './serviceTaps/fileContentTap';
+import { createServiceSessionOutputTap } from './serviceTaps/sessionOutputTap';
+import { createServiceSessionsTap } from './serviceTaps/sessionsTap';
 import { createServiceTreeTap } from './serviceTaps/treeTap';
 import { createServiceWorkspaceStatusTap } from './serviceTaps/workspaceStatusTap';
 import { createServiceStateTap } from './serviceStateTap';
@@ -17,17 +17,6 @@ function registerServicePlaceholderTaps() {
     provides: [GRAPH_NODES],
     compute: () => new Map([[GRAPH_NODES, []]]),
   }) as unknown as Tap);
-
-  grok.registerTap(createFunctionTap({
-    provides: [SESSION_OUTPUT, SESSION_DIAGNOSTICS],
-    compute: () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const values = new Map<any, any>();
-      values.set(SESSION_OUTPUT, '');
-      values.set(SESSION_DIAGNOSTICS, { kind: 'none', failed: 0, passed: 0, failures: [] });
-      return values;
-    },
-  }) as unknown as Tap);
 }
 
 export function registerLabServiceTaps() {
@@ -37,5 +26,7 @@ export function registerLabServiceTaps() {
   grok.registerTap(createServiceDepsGraphTap());
   grok.registerTap(createServiceTreeTap());
   grok.registerTap(createServiceFileContentTap());
+  grok.registerTap(createServiceSessionsTap());
+  grok.registerTap(createServiceSessionOutputTap());
   registerServicePlaceholderTaps();
 }

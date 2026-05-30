@@ -12,10 +12,12 @@ import {
   RUN_DIALOG_OPEN, RUN_DIALOG_OPEN_TAP,
   SESSION_OUTPUT, SESSION_DIAGNOSTICS,
   PEERS, SELECTED_PEER_ID, THEME,
+  WORKSPACE_REPOS,
 } from '../grips';
-import { REPO_STATUS_BY_PEER } from '../fakeData';
 import type { CommandSession, RepoRun, SessionFilterMod } from '../types';
 import { createTerminal } from '../terminalController';
+import { LAB_SERVICE_MODE } from '../dataMode';
+import { runServiceCommand } from '../serviceClient/commands';
 import PeerSelect from './PeerSelect';
 import Avatar from './Avatar';
 
@@ -103,9 +105,10 @@ export default function SessionsView() {
   const targetPeer = useGrip(SELECTED_PEER_ID) ?? '';
   const peerTap = useGrip(SELECTED_PEER_ID_TAP);
   const theme = useGrip(THEME) ?? 'dark';
+  const workspaceRepos = useGrip(WORKSPACE_REPOS) ?? [];
 
   const nameOf = (id: string) => peers.find((p) => p.id === id)?.name ?? id;
-  const availableRepos = REPO_STATUS_BY_PEER[targetPeer] ?? [];
+  const availableRepos = workspaceRepos;
 
   const hiddenCount = sessions.filter((s) => s.hidden).length;
   const wantErrors = filters.includes('errors');
@@ -136,6 +139,15 @@ export default function SessionsView() {
     const repos = runRepos.length ? runRepos : [''];
     const { errors } = validateCommand(cmd, runRepos.length);
     if (errors.length) return;
+    if (LAB_SERVICE_MODE) {
+      void runServiceCommand(cmd.split(/\s+/), repos, targetPeer).then((sessionId) => {
+        selectedTap?.set(sessionId);
+        selectedTargetTap?.set(repos[0] ?? '');
+        draftTap?.set('');
+        dialogTap?.set(false);
+      });
+      return;
+    }
     const ts = Date.now();
     const targets: RepoRun[] = repos.map((repoPath) => ({
       repoPath,
@@ -169,6 +181,13 @@ export default function SessionsView() {
   // Re-run a session's exact command against the same set of repos.
   const runAgain = (s: CommandSession) => {
     const cmd = s.argv.join(' ');
+    if (LAB_SERVICE_MODE) {
+      void runServiceCommand(s.argv, s.targets.map((t) => t.repoPath), s.peerId).then((sessionId) => {
+        selectedTap?.set(sessionId);
+        selectedTargetTap?.set(s.targets[0]?.repoPath ?? '');
+      });
+      return;
+    }
     const ts = Date.now();
     const targets: RepoRun[] = s.targets.map((t) => ({
       repoPath: t.repoPath,
