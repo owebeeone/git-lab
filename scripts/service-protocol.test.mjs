@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   ServiceClient,
 } from '../src/lab/serviceClient/client.ts';
+import {
+  parseDiffPayload,
+} from '../src/lab/serviceClient/diff/index.ts';
 import {
   FakeServiceTransport,
 } from '../src/lab/serviceClient/fakeTransport.ts';
@@ -11,6 +17,8 @@ import {
   parseServiceEnvelope,
   parseServiceStreamEvent,
 } from '../src/lab/serviceClient/protocol.ts';
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const request = {
   messageId: 'm000001',
@@ -53,6 +61,16 @@ assert.throws(
   () => parseServiceEnvelope({ ...streamEnvelope, streamId: undefined }),
   /streamId/,
 );
+
+for (const fixture of ['empty_same.json', 'diagnostics.json']) {
+  const value = JSON.parse(readFileSync(resolve(here, '../services/diffstream/fixtures', fixture), 'utf8'));
+  assert.deepEqual(parseDiffPayload(value), value);
+}
+assert.throws(
+  () => parseDiffPayload({ contentType: 'application/json' }),
+  /contentType/,
+);
+
 
 const transport = new FakeServiceTransport();
 const client = new ServiceClient({ url: 'ws://test.local/ws', transportFactory: () => transport });

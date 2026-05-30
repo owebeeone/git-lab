@@ -132,6 +132,11 @@ export interface FileStreamStatus {
   error?: string | null;
 }
 
+export interface DiffStreamStatus {
+  status: 'idle' | 'loading' | 'ready' | 'error';
+  error?: string | null;
+}
+
 // A monitored file as seen through the (future) delta protocol: a live image of
 // contents plus its git status. In the mock this is just static data.
 export interface FileImage {

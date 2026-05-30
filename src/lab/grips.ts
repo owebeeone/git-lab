@@ -51,6 +51,8 @@ export const DIFF_LEFT = defineGrip<DiffEndpoint>('Lab.DiffLeft', { peerId: SELF
 export const DIFF_LEFT_TAP = defineGrip<AtomTapHandle<DiffEndpoint>>('Lab.DiffLeft.Tap');
 export const DIFF_RIGHT = defineGrip<DiffEndpoint>('Lab.DiffRight', { peerId: SELF_ID, ref: 'working' });
 export const DIFF_RIGHT_TAP = defineGrip<AtomTapHandle<DiffEndpoint>>('Lab.DiffRight.Tap');
+export const DIFF_WINDOW = defineGrip<LineWindow>('Lab.DiffWindow', { lineStart: 0, lineEnd: 400 });
+export const DIFF_WINDOW_TAP = defineGrip<AtomTapHandle<LineWindow>>('Lab.DiffWindow.Tap');
 
 // Chat
 export const CHAT_MESSAGES = defineGrip<ChatMessage[]>('Lab.ChatMessages', INITIAL_CHAT);
