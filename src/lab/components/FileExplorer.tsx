@@ -4,7 +4,9 @@ import {
   EXPLORER_OPEN, EXPLORER_OPEN_TAP,
   EXPLORER_WIDTH, EXPLORER_WIDTH_TAP,
   EXPLORER_DRAG, EXPLORER_DRAG_TAP,
+  SELECTED_PEER_ID,
   WORKSPACE_TREE,
+  WORKSPACE_TREE_STATUS,
 } from '../grips';
 import type { Peer, WorkspaceTreeEntry } from '../types';
 import { dragProps, fileLink } from '../dnd';
@@ -53,7 +55,12 @@ export default function FileExplorer({
   onOpen: (key: string) => void;
   peer?: Peer;
 }) {
-  const tree = buildTree(useGrip(WORKSPACE_TREE) ?? []);
+  const selectedPeerId = useGrip(SELECTED_PEER_ID) ?? '';
+  const treeStatus = useGrip(WORKSPACE_TREE_STATUS) ?? { peerId: '', status: 'idle' as const, error: null };
+  const rawTree = useGrip(WORKSPACE_TREE) ?? [];
+  const treeReadyForPeer = treeStatus.status === 'ready' && treeStatus.peerId === selectedPeerId;
+  const loadingTree = treeStatus.peerId === selectedPeerId && treeStatus.status === 'loading';
+  const tree = buildTree(treeReadyForPeer ? rawTree : []);
   const collapsedList = useGrip(EXPLORER_COLLAPSED) ?? [];
   const collapsedTap = useGrip(EXPLORER_COLLAPSED_TAP);
   const collapsed = new Set(collapsedList);
@@ -109,6 +116,7 @@ export default function FileExplorer({
   };
 
   const repos = [...tree.children.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const peerName = peer?.name ?? selectedPeerId;
 
   if (!open) {
     return (
@@ -130,9 +138,28 @@ export default function FileExplorer({
       <aside className="explorer" style={{ width }}>
         <div className="explorer-head">
           <span>Explorer</span>
+          <span className={`explorer-state ${loadingTree ? 'loading' : treeReadyForPeer ? 'ready' : 'idle'}`}>
+            {loadingTree ? `Loading ${peerName}` : treeReadyForPeer ? `${repos.length} repos` : 'Waiting'}
+          </span>
           <button className="ghost explorer-collapse" onClick={() => openTap?.set(false)} title="Hide explorer">‹</button>
         </div>
         <div className="explorer-tree">
+          {loadingTree && (
+            <div className="tree-loading">
+              <span className="mini-spinner" />
+              <span>Loading file tree for {peerName}…</span>
+            </div>
+          )}
+          {!loadingTree && !treeReadyForPeer && (
+            <div className="tree-loading muted">
+              <span>Waiting for file tree…</span>
+            </div>
+          )}
+          {treeReadyForPeer && repos.length === 0 && (
+            <div className="tree-loading muted">
+              <span>No files found.</span>
+            </div>
+          )}
           {repos.map((r) => renderNode(r, 0, r.name))}
         </div>
       </aside>

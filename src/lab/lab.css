@@ -219,7 +219,11 @@
 .files-ide { display: flex; flex-direction: column; height: 100%; }
 .ide-body { flex: 1 1 auto; display: flex; min-height: 0; margin-top: 12px; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
 .explorer { flex: 0 0 auto; border-right: 1px solid var(--border); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
-.explorer-head { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); border-bottom: 1px solid var(--border); }
+.explorer-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; font-size: 0.72rem; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--border); }
+.explorer-head > span:first-child { letter-spacing: 1px; }
+.explorer-state { margin-left: auto; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; font-size: 0.72rem; }
+.explorer-state.loading { color: var(--accent); }
+.explorer-state.ready { color: var(--muted); }
 .explorer-collapse { font-size: 0.9rem; line-height: 1; padding: 0 6px; }
 .explorer-resizer { flex: 0 0 6px; width: 6px; cursor: col-resize; background: var(--border); }
 .explorer-resizer:hover { background: var(--accent-line); }
@@ -230,6 +234,9 @@
 }
 .explorer-collapsed-tab:hover { background: var(--card); }
 .explorer-tree { overflow: auto; flex: 1 1 auto; padding: 4px 0; }
+.tree-loading { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 0.78rem; color: var(--muted); }
+.mini-spinner { width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .tree-row { display: flex; align-items: center; gap: 6px; width: 100%; background: transparent; border: none; color: var(--text); padding: 4px 8px; cursor: pointer; font-size: 0.82rem; text-align: left; }
 .tree-row:hover { background: var(--card); }
 .tree-row.file.active { background: var(--accent-soft); color: var(--accent); }

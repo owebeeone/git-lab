@@ -115,6 +115,7 @@ export const WORKSPACE_REPOS = defineGrip<RepoStatus[]>('Lab.WorkspaceRepos', []
 export const WORKSPACE_DEP_EDGES = defineGrip<DependencyEdge[]>('Lab.WorkspaceDependencyEdges', []);
 export const WORKSPACE_TREE = defineGrip<WorkspaceTreeEntry[]>('Lab.WorkspaceTree', []);
 export const WORKSPACE_TREE_VERSION = defineGrip<string>('Lab.WorkspaceTreeVersion', '');
+export const WORKSPACE_TREE_STATUS = defineGrip<{ peerId: string; status: 'idle' | 'loading' | 'ready' | 'error'; error: string | null }>('Lab.WorkspaceTreeStatus', { peerId: '', status: 'idle', error: null });
 export const GRAPH_NODES = defineGrip<GraphRenderNode[]>('Lab.GraphNodes', []);
 
 // Command sessions (project_viewer-style runs)
