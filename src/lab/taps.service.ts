@@ -1,6 +1,5 @@
-import { createAtomValueTap, createFunctionTap, type Tap } from '@owebeeone/grip-react';
+import { createFunctionTap, type Tap } from '@owebeeone/grip-react';
 import { grok } from '../runtime';
-import { SERVICE_CONNECTION, SERVICE_CONNECTION_TAP } from './grips.service';
 import {
   FILE_CONTENT,
   FILE_GIT_STATUS,
@@ -8,6 +7,7 @@ import {
   SESSION_DIAGNOSTICS,
   SESSION_OUTPUT,
 } from './grips';
+import { createServiceStateTap } from './serviceStateTap';
 import { registerLabUiTaps } from './taps';
 
 function registerServicePlaceholderTaps() {
@@ -38,9 +38,6 @@ function registerServicePlaceholderTaps() {
 
 export function registerLabServiceTaps() {
   registerLabUiTaps();
-  grok.registerTap(createAtomValueTap(
-    SERVICE_CONNECTION,
-    { initial: SERVICE_CONNECTION.defaultValue!, handleGrip: SERVICE_CONNECTION_TAP },
-  ));
+  grok.registerTap(createServiceStateTap());
   registerServicePlaceholderTaps();
 }

@@ -1,0 +1,207 @@
+import type { ServiceConnectionState } from '../grips.service';
+import {
+  parseServiceEnvelope,
+  parseServiceStreamEvent,
+  type ServiceEnvelope,
+  type ServiceStreamEvent,
+} from './protocol.ts';
+import { WebSocketServiceTransport, type ServiceTransport } from './transport.ts';
+
+export interface ServiceClientOptions {
+  url: string;
+  transportFactory?: (url: string) => ServiceTransport;
+}
+
+type StatusListener = (state: ServiceConnectionState) => void;
+
+export class ServiceClient {
+  private readonly options: ServiceClientOptions;
+  private readonly transport: ServiceTransport;
+  private messageIndex = 0;
+  private streamIndex = 0;
+  private reader: Promise<void> | null = null;
+  private readonly pending = new Map<string, {
+    resolve: (value: ServiceEnvelope) => void;
+    reject: (error: Error) => void;
+  }>();
+  private readonly streams = new Map<string, {
+    queue: ServiceStreamEvent[];
+    waiters: Array<(value: IteratorResult<ServiceStreamEvent>) => void>;
+  }>();
+  private readonly statusListeners = new Set<StatusListener>();
+  private currentStatus: ServiceConnectionState;
+
+  constructor(options: ServiceClientOptions) {
+    this.options = options;
+    this.transport = options.transportFactory?.(options.url) ?? new WebSocketServiceTransport(options.url);
+    this.currentStatus = { status: 'disconnected', url: options.url, error: null };
+  }
+
+  get status(): ServiceConnectionState {
+    return this.currentStatus;
+  }
+
+  nextMessageId(): string {
+    this.messageIndex += 1;
+    return `m${this.messageIndex.toString().padStart(6, '0')}`;
+  }
+
+  nextStreamId(): string {
+    this.streamIndex += 1;
+    return `s${this.streamIndex.toString().padStart(6, '0')}`;
+  }
+
+  async connect(signal?: AbortSignal): Promise<void> {
+    if (this.currentStatus.status === 'connected' || this.currentStatus.status === 'connecting') {
+      return;
+    }
+    this.setStatus({ status: 'connecting', url: this.options.url, error: null });
+    try {
+      await this.transport.connect(signal);
+      this.setStatus({ status: 'connected', url: this.options.url, error: null });
+      this.reader ??= this.readLoop(signal);
+    } catch (error) {
+      this.setStatus({ status: 'error', url: this.options.url, error: errorMessage(error) });
+      throw error;
+    }
+  }
+
+  close(): void {
+    this.transport.close();
+    this.setStatus({ status: 'disconnected', url: this.options.url, error: null });
+  }
+
+  async request(method: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): Promise<ServiceEnvelope> {
+    await this.connect(signal);
+    const messageId = this.nextMessageId();
+    const envelope = parseServiceEnvelope({ messageId, kind: 'request', method, payload });
+    const result = new Promise<ServiceEnvelope>((resolve, reject) => {
+      this.pending.set(messageId, { resolve, reject });
+      signal?.addEventListener('abort', () => {
+        this.pending.delete(messageId);
+        reject(new Error('request aborted'));
+      }, { once: true });
+    });
+    this.transport.send(envelope);
+    return result;
+  }
+
+  async *subscribe(method: string, payload: Record<string, unknown> = {}, signal?: AbortSignal): AsyncIterable<ServiceStreamEvent> {
+    await this.connect(signal);
+    const messageId = this.nextMessageId();
+    const streamId = this.nextStreamId();
+    this.streams.set(streamId, { queue: [], waiters: [] });
+    this.transport.send(parseServiceEnvelope({ messageId, kind: 'request', method, streamId, payload }));
+    try {
+      while (!signal?.aborted) {
+        const event = await this.nextStreamEvent(streamId, signal);
+        if (event.done) return;
+        yield event.value;
+      }
+    } finally {
+      this.streams.delete(streamId);
+    }
+  }
+
+  async *watchStatus(signal?: AbortSignal): AsyncIterable<ServiceConnectionState> {
+    yield this.currentStatus;
+    const queue: ServiceConnectionState[] = [];
+    const waiters: Array<(value: IteratorResult<ServiceConnectionState>) => void> = [];
+    const listener = (state: ServiceConnectionState) => {
+      const waiter = waiters.shift();
+      if (waiter) waiter({ done: false, value: state });
+      else queue.push(state);
+    };
+    this.statusListeners.add(listener);
+    try {
+      while (!signal?.aborted) {
+        const queued = queue.shift();
+        if (queued) {
+          yield queued;
+          continue;
+        }
+        const next = await new Promise<IteratorResult<ServiceConnectionState>>((resolve) => {
+          const abort = () => resolve({ done: true, value: undefined });
+          signal?.addEventListener('abort', abort, { once: true });
+          waiters.push((value) => {
+            signal?.removeEventListener('abort', abort);
+            resolve(value);
+          });
+        });
+        if (next.done) return;
+        yield next.value;
+      }
+    } finally {
+      this.statusListeners.delete(listener);
+    }
+  }
+
+  private async readLoop(signal?: AbortSignal): Promise<void> {
+    try {
+      for await (const message of this.transport.messages(signal)) {
+        this.dispatch(parseServiceEnvelope(message));
+      }
+    } catch (error) {
+      this.failAll(errorMessage(error));
+      this.setStatus({ status: 'error', url: this.options.url, error: errorMessage(error) });
+    } finally {
+      this.reader = null;
+      if (this.currentStatus.status === 'connected') {
+        this.setStatus({ status: 'reconnecting', url: this.options.url, error: 'transport closed' });
+      }
+    }
+  }
+
+  private dispatch(message: ServiceEnvelope): void {
+    if (message.kind === 'response' || message.kind === 'error') {
+      const pending = this.pending.get(message.messageId);
+      if (!pending) return;
+      this.pending.delete(message.messageId);
+      if (message.kind === 'error') pending.reject(new Error(message.error?.message ?? 'service error'));
+      else pending.resolve(message);
+      return;
+    }
+    if (message.kind === 'stream-event' && message.streamId) {
+      const stream = this.streams.get(message.streamId);
+      if (!stream) return;
+      const event = parseServiceStreamEvent(message.payload);
+      const waiter = stream.waiters.shift();
+      if (waiter) waiter({ done: false, value: event });
+      else stream.queue.push(event);
+    }
+  }
+
+  private nextStreamEvent(streamId: string, signal?: AbortSignal): Promise<IteratorResult<ServiceStreamEvent>> {
+    const stream = this.streams.get(streamId);
+    if (!stream || signal?.aborted) return Promise.resolve({ done: true, value: undefined });
+    const queued = stream.queue.shift();
+    if (queued) return Promise.resolve({ done: false, value: queued });
+    return new Promise((resolve) => {
+      const abort = () => resolve({ done: true, value: undefined });
+      signal?.addEventListener('abort', abort, { once: true });
+      stream.waiters.push((value) => {
+        signal?.removeEventListener('abort', abort);
+        resolve(value);
+      });
+    });
+  }
+
+  private setStatus(state: ServiceConnectionState): void {
+    this.currentStatus = state;
+    for (const listener of this.statusListeners) listener(state);
+  }
+
+  private failAll(message: string): void {
+    for (const pending of this.pending.values()) pending.reject(new Error(message));
+    this.pending.clear();
+  }
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+const viteEnv = (import.meta as ImportMeta & { env?: { VITE_GL_SERVICE_URL?: string } }).env;
+const serviceUrl = viteEnv?.VITE_GL_SERVICE_URL ?? 'ws://127.0.0.1:3141/ws';
+
+export const defaultServiceClient = new ServiceClient({ url: serviceUrl });

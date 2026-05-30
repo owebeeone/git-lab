@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
 import {
+  ServiceClient,
+} from '../src/lab/serviceClient/client.ts';
+import {
+  FakeServiceTransport,
+} from '../src/lab/serviceClient/fakeTransport.ts';
+import {
   ServiceProtocolError,
   encodeServiceEnvelope,
   parseServiceEnvelope,
@@ -47,5 +53,36 @@ assert.throws(
   () => parseServiceEnvelope({ ...streamEnvelope, streamId: undefined }),
   /streamId/,
 );
+
+const transport = new FakeServiceTransport();
+const client = new ServiceClient({ url: 'ws://test.local/ws', transportFactory: () => transport });
+const requestPromise = client.request('health.get', { ok: true });
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.equal(transport.sent.length, 1);
+assert.equal(transport.sent[0].messageId, 'm000001');
+transport.push({
+  messageId: 'm000001',
+  kind: 'response',
+  method: 'health.get',
+  payload: { ok: true },
+});
+assert.deepEqual((await requestPromise).payload, { ok: true });
+
+const controller = new AbortController();
+const statusIterator = client.watchStatus(controller.signal)[Symbol.asyncIterator]();
+assert.equal((await statusIterator.next()).value.status, 'connected');
+const disconnectedStatus = statusIterator.next();
+client.close();
+assert.equal((await disconnectedStatus).value.status, 'disconnected');
+controller.abort();
+
+const closedTransport = new FakeServiceTransport();
+const closedClient = new ServiceClient({ url: 'ws://test.local/ws', transportFactory: () => closedTransport });
+await closedClient.connect();
+const reconnecting = closedClient.watchStatus()[Symbol.asyncIterator]();
+assert.equal((await reconnecting.next()).value.status, 'connected');
+const reconnectingStatus = reconnecting.next();
+closedTransport.close();
+assert.equal((await reconnectingStatus).value.status, 'reconnecting');
 
 console.log('OK: service protocol validators');
